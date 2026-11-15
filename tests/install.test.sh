@@ -66,6 +66,19 @@ LEFT=$(find "$HOME/.claude" -name '.*' -type f | head -3)
 [[ -z "$LEFT" ]] && pass "no temp file left behind" || fail "temp files" "$LEFT"
 
 echo ""
+echo "=== the installed skill-forge drafts from the installed templates ==="
+SF="$S/skill-forge"
+SF_PY=$(bash "$SF/bin/python.sh" 2>/dev/null)
+F_OUT=$(SKILL_FORGE_STATE="$TMP/sf-state" "${SF_PY:-python3}" -B "$SF/bin/forge.py" list 2>&1)
+grep -q '^sql-readonly ' <<<"$F_OUT" \
+  && pass "the installed forge.py finds the installed templates" || fail "installed forge.py lists archetypes" "$(printf '%s' "$F_OUT" | head -3)"
+SF_ENV=(SKILL_FORGE_STATE="$TMP/sf-state" SKILL_FORGE_CONFIG="$TMP/none.toml")
+env "${SF_ENV[@]}" "${SF_PY:-python3}" -B "$SF/bin/forge.py" draft metrics-query job-latency --question "why is this job slow" >/dev/null 2>&1
+V_OUT=$(env "${SF_ENV[@]}" "${SF_PY:-python3}" -B "$SF/bin/forge.py" verify "$TMP/sf-state/drafts/job-latency" --no-mutate 2>&1); V_RC=$?
+[[ "$V_RC" == 0 ]] && grep -q '^skill_lint: PASS' <<<"$V_OUT" && grep -q '^tests: exit 0' <<<"$V_OUT" \
+  && pass "the installed forge.py drafts a skill whose tests and lint pass" || fail "installed draft verifies" "$(printf '%s' "$V_OUT" | tail -5)"
+
+echo ""
 echo "=== a re-install replaces by rename and reports nothing changed ==="
 I1=$(inode "$S/comms-hub/bin/hub.py")
 exec 3< "$S/comms-hub/bin/hub.py"
