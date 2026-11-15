@@ -1,0 +1,39 @@
+name: Panel
+
+# The comms panel is a Claude Code mod, and the mod API is early access: a moved
+# API shows only as a blank or erroring pane. So its tests run on the newest
+# Claude Code daily, as well as on each change to a mod.
+on:
+  schedule:
+    - cron: '41 6 * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['skills/*/panel/**', '.github/workflows/panel.yml']
+  pull_request:
+    paths: ['skills/*/panel/**', '.github/workflows/panel.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  mods:
+    name: claude plugin test, newest Claude Code
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+      # No login: the tests run on the CLI's engine in an empty config dir.
+      - name: Run each mod's tests
+        run: |
+          claude --version
+          found=0
+          for m in $(find skills -path '*/.claude-plugin/plugin.json' | sed 's|/\.claude-plugin/plugin\.json$||' | sort); do
+            found=1
+            echo "::group::$m"
+            CLAUDE_CONFIG_DIR=$(mktemp -d) claude plugin test "$m"
+            echo "::endgroup::"
+          done
+          [ "$found" = 1 ] || { echo "::error::no mod found under skills/"; exit 1; }

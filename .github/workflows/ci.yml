@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: doctor.sh (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install jq (Linux)
+        if: runner.os == 'Linux'
+        run: .github/install-apt-deps.sh jq
+
+      - name: Install jq (macOS)
+        if: runner.os == 'macOS'
+        run: brew install jq || true
+
+      # The skills' tests need 3.10+ with tomllib; pinned so both OSes run the same one.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # skill-lint's C10 checks each ~/.claude script a skill runs against the
+      # harness's bin/; the test reads the release it names from this clone.
+      - name: Clone claude-code-harness
+        run: |
+          git clone --quiet https://github.com/AdityaRon/claude-code-harness.git "$RUNNER_TEMP/harness"
+          echo "CCH_HARNESS_CLONE=$RUNNER_TEMP/harness" >> "$GITHUB_ENV"
+
+      - name: Run the test suites
+        run: bash doctor.sh
+
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: .github/install-apt-deps.sh shellcheck
+      - name: Lint the scripts
+        run: shellcheck -S warning ./*.sh .github/*.sh skills/*/bin/*.sh
+      - name: Lint the test suites
+        # Errors only: the suites' `a && b || c` pass/fail lines are their idiom.
+        run: shellcheck -x -S error tests/*.sh
+
+  python-compile:
+    # The oldest interpreter any script runs under is macOS's /usr/bin/python3 (3.9).
+    name: python compile
+    runs-on: macos-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile every Python file
+        run: |
+          /usr/bin/python3 --version
+          git ls-files -z '*.py' | xargs -0 /usr/bin/python3 -m py_compile
