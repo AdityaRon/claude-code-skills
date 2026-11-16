@@ -1,4 +1,4 @@
-r"""review_lint.py: the body's shape, the PR's live state, and that a review from here is a COMMENT.
+r"""review_lint.py: the body's shape, the PR's live state, and that a review from here is a COMMENT with no verdict.
 
 Mutations (run.py --mutate applies each and expects this file to fail):
   hint-hand-post: review_lint.py: `print(f"PASS: the body. Post the review with review_lint.py --post <review.json> --pr {owner}/{repo}#{n} --apply, "` => `print(f"post: gh pr review {n} --repo {owner}/{repo} --comment --body-file {args.file} "`
@@ -24,7 +24,10 @@ Mutations (run.py --mutate applies each and expects this file to fail):
   post-unlogged: review_lint.py: `row = hub.log_event(cfg, "reviewed", verdict(r),` => `row = dict(id="x", text="", ref="", kind="reviewed") or hub.log_event(cfg, "reviewed", verdict(r),`
   todo-left-open: review_lint.py: `hub.log_event(cfg, "done", "review posted", ref=row["ref"], corrects=t["id"])` => `pass`
   rows-pile-up: review_lint.py: `corrects=old["id"] if old else "",` => `corrects="",`
-  failed-post-logged: review_lint.py: `print(f"BLOCKED: the post failed, so nothing was logged and the review is still to do: {e}")
+  net-verdict-ok: review_lint.py: `if VERDICT.search(line):` => `if False:`
+  net-any-case: review_lint.py: `VERDICT = re.compile(r"(?:^` => `VERDICT = re.compile(r"(?i)(?:^`
+  net-double-colon: review_lint.py: `\s*:(?!:)")` => `\s*:")`
+  failed-post-logged: review_lint.py:`print(f"BLOCKED: the post failed, so nothing was logged and the review is still to do: {e}")
         return 3` => `res = {}`
 """
 import contextlib
@@ -80,6 +83,25 @@ class Lint(unittest.TestCase):
             self.assertEqual(run(env, "\n")[0], 1)
         with Env(config=CONFIG.replace("merged_days = 7", "merged_days = 7\nreview_max_chars = 3000")) as env:
             self.assertEqual(run(env, "x" * 2600 + "\n")[0], 0)
+
+    def test_a_net_verdict_is_refused_and_findings_alone_pass(self):
+        # pr-review closes an approval "Net: approving"; from here the review is a COMMENT the user has not read.
+        with Env() as env:
+            for text, n in (("One nit: the retry loop never backs off (src/a.py:3).\n\nNet: approving\n", 3),
+                            ("**Net:** LGTM\n", 1), ("- **Net**: approve once #2 is answered\n", 1),
+                            ("Two nits, neither blocking. Net: approving.\n", 1),
+                            ("Net: two nits, one question\n", 1)):
+                rc, out = run(env, text)
+                self.assertEqual(rc, 1, text)
+                self.assertIn(f'FAIL: line {n}: a "Net:" verdict: this review posts as a COMMENT', out)
+                self.assertNotIn("PASS", out)
+            for text in ("The handler approves every request it is sent (src/a.py:3).\n",
+                         "Subnet: the 10.0.0.0/8 range is hardcoded (src/net.py:9).\n",
+                         "The config sets the wrong key:\n  net: host\nso the pod shares the node's ports.\n",
+                         "It fails here. net::ERR_FAILED shows in the console (src/a.js:4).\n",
+                         "Net::HTTP.get(uri) has no timeout here (lib/fetch.rb:12).\n"):
+                rc, out = run(env, text)
+                self.assertEqual(rc, 0, out)
 
     def test_the_pr_must_be_open_not_draft_and_at_the_head_the_reviewer_read(self):
         with Env() as env:
@@ -181,7 +203,11 @@ class Post(unittest.TestCase):
                            (review(findings=[{"kind": "maybe"}]), "needs a kind"),
                            (review(comments=[{"path": "a.py", "body": "x y z"}]), "an integer line"),
                            (dash, "comment 1 (a.py:1): line 1: em dash"),
-                           (review(body="x" * 2600), "over the 2500 cap")):
+                           (review(body="x" * 2600), "over the 2500 cap"),
+                           (review(body="The retry loop never backs off (src/a.py:3).\nNet: approving"),
+                            'line 2: a "Net:" verdict'),
+                           (review(comments=[{"path": "a.py", "line": 1, "body": "Fine as it is. Net: LGTM"}]),
+                            'comment 1 (a.py:1): line 1: a "Net:" verdict')):
                 rc, out, sent = post(env, r)
                 self.assertEqual((rc, sent), (1, []), out)
                 self.assertIn(why, out)
