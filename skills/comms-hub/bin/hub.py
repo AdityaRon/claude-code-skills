@@ -892,8 +892,10 @@ def handles(text: str) -> set[str]:
     """What names an item in a link or a log row's ref: a PR as owner/repo#N, a
     Slack thread by each ts, a ticket key, else the text as written."""
     text = (text or "").strip().rstrip("/.,;)")
-    found = {pr_ref(text)} | set(slack_ts(text)) | set(re.findall(r"\b[A-Z][A-Z0-9]+-\d+\b", text))
-    return (found - {""}) or ({text} if text else set())
+    if pr_ref(text):  # one PR, though its repo reads like a ticket key (PROJ-12-service)
+        return {pr_ref(text)}
+    found = set(slack_ts(text)) | set(re.findall(r"\b[A-Z][A-Z0-9]+-\d+\b", text))
+    return found or ({text} if text else set())
 
 
 def by_session(rows: list[dict]) -> list[tuple[str, int, str]]:

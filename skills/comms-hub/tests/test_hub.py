@@ -5,6 +5,7 @@ Mutations (run.py --mutate applies each and expects this file to fail):
   returned-began-unread: hub.py: ` | handles((r.get("began") or {}).get("ref") or "") for r in routed_}` => ` for r in routed_}`
   returned-all-unchecked: hub.py: `problem = text_problem(why) if why else "--all needs WHY, the text the panel shows"` => `problem = ""`
   folded-began-dropped: hub.py: `"began": old.get("began") or old}` => `}`
+  handles-pr-as-ticket: hub.py: `if pr_ref(text):  # one PR` => `if False:  # one PR`
   commented-revokes: hub.py: `if r.get("state") in ("COMMENTED", "PENDING"):` => `if r.get("state") in ("PENDING",):`
   first-review-wins: hub.py: `key=lambda r: r.get("submittedAt") or ""` => `key=lambda r: r.get("submittedAt") or "", reverse=True`
   cancelled-green: hub.py: `GREEN = ("SUCCESS", "NEUTRAL", "SKIPPED")` => `GREEN = ("SUCCESS", "NEUTRAL", "SKIPPED", "CANCELLED")`
@@ -550,6 +551,13 @@ class Returned(unittest.TestCase):
             self.assertIn(f"returned: no open row of app-session's is on acme/app#2; open with web-session ({b['id']})",
                           out)
             self.assertEqual(self.open_(cfg), [b["id"], c["id"]])
+
+    def test_a_link_names_its_pr_ticket_or_thread(self):
+        self.assertEqual(hub.handles("https://github.com/acme/PROJ-12-service/pull/3/files"),
+                         {"acme/PROJ-12-service#3"}, "a repo named like a ticket is still one PR")
+        self.assertEqual(hub.handles("https://example.atlassian.net/browse/PROJ-12"), {"PROJ-12"})
+        self.assertEqual(hub.handles("https://example.slack.com/archives/C1/p1792600000000100"), {"1792600000.000100"})
+        self.assertEqual(hub.handles("notes on the deploy"), {"notes on the deploy"})
 
     def test_all_closes_every_row_of_that_session_with_why_as_the_text(self):
         with Env(now="2026-10-21T17:00:00Z"):
