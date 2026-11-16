@@ -181,6 +181,10 @@ def load_config(explicit: str | None = None) -> dict:
     KNOWN_BOTS.update(str(b).lower() for b in gh["bots"])
     cfg.setdefault("slack", {}).setdefault("max_chars", MAX_CHARS)
     cfg["slack"].setdefault("github_logins", {})
+    # `queries` prints it as the size of every page of a mention search.
+    size = cfg["slack"].setdefault("search_page_size", 20)
+    if isinstance(size, bool) or not isinstance(size, int) or size < 1:
+        raise ConfigError(f"{path}: slack.search_page_size must be a whole number of hits, 1 or more, not {size!r}")
     # The panel's names for what the log holds as ids and links.
     for table, key in ((gh, "repo_aliases"), (cfg["slack"], "channel_names")):
         names = table.setdefault(key, {})
@@ -1627,11 +1631,20 @@ def main(argv=None, gh: Gh | None = None) -> int:
             since -= dt.timedelta(days=CONTROL_DAYS)
         for q in mention_queries(uid, since):
             print(q)
+        # Nothing here sees the pages, so the size rule is printed. A search paged
+        # by number starts page 2 where page 2 at its own size would start, so a
+        # size changed between pages can skip hits that no page showed.
         if argv[1:] == []:
             print(f"reach: {_when(cfg, reach)} epoch={int(reach.timestamp())}: page each search, newest first, "
                   "until its oldest hit is at or before this, or it runs out")
+            size = cfg["slack"]["search_page_size"]
+            print(f"page: {size} hits on every page of one search (slack.search_page_size); if a search's size "
+                  "changed between its pages, read that search again from its first page")
             print(f"then: hub.py queries --reached {int(at.timestamp())} --oldest <each search's oldest hit read, "
                   "its ts or permalink, or end where it ran out>")
+        else:
+            print("page: the smallest the search tool takes, since one row proves the control; a search of its own, "
+                  "so its size is not the mention searches'")
         return 0
     if argv[0] == "routed":
         text = " ".join(argv[1:])

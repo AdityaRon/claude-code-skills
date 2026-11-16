@@ -14,7 +14,9 @@ description: How to write a PR review, answer review comments, and request revie
 - Shape: open on the sources actually read, not the diff. Bold lead-ins for what
   you chased down, each citing `file`:line. Asks numbered and ranked, non-blocking
   unless the next bullet says otherwise; "Nit:" for trivia; label what is
-  inherited, not introduced. Close "Net: approving" only when no ask blocks.
+  inherited, not introduced. Close "Net: approving" only on a review submitted
+  as an approval the user granted, when no ask blocks; a comment review carries
+  findings only.
 - Rate an ask by its fail direction, not by how rare its trigger is. A path where
   the change's own headline claim does not hold (a case-insensitive match that
   still returns nothing once a second filter is set), or one that returns a silent
