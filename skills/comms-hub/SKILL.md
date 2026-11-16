@@ -164,11 +164,11 @@ whole context.
    - The scan logs the tick's GitHub work before you start it, a `todo` row per
      ROUTE item and per review or re-look (`logged:`), so a compaction mid-tick
      resumes from disk: `in-flight:` lists what an earlier tick left, each with
-     its id, what it is and its link. Finish each. The scan closes a todo once
-     GitHub shows it done.
+     its id, what it is and its link. Finish each. The scan closes a todo or a
+     routed row (`with-sessions:`, naming `hub.py returned`) GitHub shows done.
    - `morning-unchecked:` above 0 names scheduled messages that posted with no
-     re-gate since the window opened (the machine slept): re-check each claim
-     now and tell the user what moved. The scan logged each under Needs you.
+     re-gate since the window opened (the machine slept): re-check each claim,
+     tell the user what moved, then run the command it names.
    - `missed-ticks:` above 0 names scheduled ticks since the last scan that
      left no scan or tick row: the machine slept, or a fire failed before this
      session could act (three "Not logged in" fires once logged nothing, and
@@ -419,12 +419,12 @@ whole context.
    BLOCKED scan or unknown mention search (`--kind asked` or `--kind blocked`,
    with `--needs-user`). The command prints the row's id. An entry made after
    the fact passes `--at HH:MM`, never a time in the text. A row with
-   `--corrects <id>` replaces that row in the panel: use it for a correction,
-   for the user's answer to a question (`--kind answered`), and for a
-   session's reply to an item routed to it (`--kind returned`). Step 1's
-   header lists what is still open (`needs-you:`, `with-sessions:`). Before
-   reporting a question as waiting on the user, read its thread for the user's
-   own reply: the mention searches skip the user's messages, and a question
+   `--corrects <id>` replaces that row in the panel: use it for a correction
+   and the user's answer to a question (`--kind answered`). When a peer
+   reports back, `PY B/hub.py returned <session> <link>...` closes its rows.
+   Step 1's header lists what is still open (`needs-you:`, `with-sessions:`).
+   Before reporting a question waiting on the user, read its thread for the
+   user's own reply: the mention searches skip the user's messages, and one
    answered at 17:40 was reported open three ticks running. Answered: log it
    with `--corrects` instead.
    A tick that found

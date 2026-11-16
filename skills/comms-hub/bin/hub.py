@@ -37,6 +37,10 @@ review state and CI state. Imported by the scripts beside it; run directly:
   hub.py owner CHANNEL TS PEER
                       PEER owns the replies in the thread at TS for 14 days: what --record-sent
                       records for a send it knows the thread of, by hand for one it does not
+  hub.py returned SESSION LINK [LINK ...] | SESSION --all WHY
+                      SESSION reported back: closes its open routed rows on each LINK (a PR, a
+                      ticket or a Slack thread), or with --all every one, WHY the panel's text;
+                      a `returned` row each. Exit 1 if a LINK matched none. SESSION alone lists them
   hub.py feedback TEXT  append a dated correction to feedback.md, for the next change to the skill
   hub.py park [REF [WHY]]
                       keep a PR (owner/repo#N or its link) off the panel and out of the scan's
@@ -845,7 +849,9 @@ def day_rows(cfg: dict, day: dt.date) -> list[dict]:
 
 def folded(cfg: dict, days: int) -> list[dict]:
     """The last `days` days' rows, oldest first, each correction folded into the
-    row it corrects: it takes that row's place, marked corrected, never a new line."""
+    row it corrects: it takes that row's place, marked corrected, never a new line.
+    `began` keeps the row it corrects as first logged: the scan's `key=` and a
+    todo's link were in it, and a routed row that corrected the todo dropped both."""
     today = local_now(cfg).date()
     rows = [r for back in reversed(range(days)) for r in day_rows(cfg, today - dt.timedelta(days=back))]
     by_id: dict[str, dict] = {}
@@ -855,7 +861,8 @@ def folded(cfg: dict, days: int) -> list[dict]:
         target = alias.get(r.get("corrects") or "", r.get("corrects"))
         if target and target in by_id:
             old = by_id[target]
-            by_id[target] = {**r, "id": target, "at": old["at"], "day": old["day"], "corrected": True}
+            by_id[target] = {**r, "id": target, "at": old["at"], "day": old["day"], "corrected": True,
+                             "began": old.get("began") or old}
             alias[r["id"]] = target
         else:
             by_id[r["id"]] = r
@@ -867,6 +874,85 @@ def open_items(cfg: dict) -> tuple[list[dict], list[dict]]:
     """Rows still needing the user, and items routed to a session not yet back."""
     rows = folded(cfg, OPEN_DAYS)
     return [r for r in rows if r.get("needs_user")], [r for r in rows if r["kind"] == "routed"]
+
+
+def row_key(row: dict) -> str:
+    """The `key=` the scan logged a row under, from the row as first logged."""
+    m = re.search(r"\bkey=(\S+)", (row.get("began") or row).get("detail") or "")
+    return m.group(1) if m else ""
+
+
+def keyed(cfg: dict) -> dict[str, dict]:
+    """Each row of the last OPEN_DAYS days the scan logged with a `key=`, by that
+    key, as folded: `corrected` once a later row corrects it."""
+    return {k: r for r in folded(cfg, OPEN_DAYS) for k in [row_key(r)] if k}
+
+
+def handles(text: str) -> set[str]:
+    """What names an item in a link or a log row's ref: a PR as owner/repo#N, a
+    Slack thread by each ts, a ticket key, else the text as written."""
+    text = (text or "").strip().rstrip("/.,;)")
+    found = {pr_ref(text)} | set(slack_ts(text)) | set(re.findall(r"\b[A-Z][A-Z0-9]+-\d+\b", text))
+    return (found - {""}) or ({text} if text else set())
+
+
+def by_session(rows: list[dict]) -> list[tuple[str, int, str]]:
+    """(session, open rows, the oldest one's age), most rows first."""
+    out: dict[str, list] = {}
+    for r in rows:
+        at = parse_time(r["ts"])
+        c = out.setdefault(r.get("who") or "(no session)", [0, at])
+        c[0], c[1] = c[0] + 1, min(c[1], at)
+    return [(who, n, _age(at)) for who, (n, at) in sorted(out.items(), key=lambda kv: (-kv[1][0], kv[0]))]
+
+
+def returned_cmd(cfg: dict, argv: list[str]) -> int:
+    """`returned SESSION LINK...` or `returned SESSION --all WHY`: the peer reported
+    back, so its open routed rows close in one call, each with a `returned` row.
+    130 stayed open (reported 2026-11-16): one `log --corrects` a row was never
+    done, and the scan's header named every id each tick."""
+    session = argv[1].strip() if len(argv) > 1 else ""
+    links, why = argv[2:], ""
+    if links[:1] == ["--all"]:
+        why = " ".join(" ".join(links[1:]).split())
+        links = []
+        problem = text_problem(why) if why else "--all needs WHY, the text the panel shows"
+        if problem:
+            print(f"returned: {problem}. Nothing closed.")
+            return 2
+    if not session or session.startswith("-") or any(a.startswith("-") for a in links):
+        print('usage: hub.py returned SESSION LINK [LINK ...] | SESSION --all "WHY": SESSION as the routed rows name '
+              "it (--who); each LINK a PR, ticket or Slack thread one of them is on")
+        return 2
+    routed_ = open_items(cfg)[1]
+    mine = [r for r in routed_ if (r.get("who") or "").strip().lower() == session.lower()]
+    if not mine:
+        print(f"returned: nothing open with {session}; open: "
+              + (", ".join(f"{who} {n}" for who, n, _ in by_session(routed_)) or "none") + "; nothing closed")
+        return 1
+    if not links and not why:
+        for r in mine:
+            print(f"{r['id']}  {_age(parse_time(r['ts']))}  {short_ref(cfg, routed_link(r)) or '-'}  {r['text']}")
+        print(f"returned: {len(mine)} open with {session}: name each LINK, or --all \"WHY\"; nothing closed")
+        return 0
+    names = {r["id"]: handles(r.get("ref") or "") | handles((r.get("began") or {}).get("ref") or "") for r in routed_}
+    wanted = [(link, handles(link)) for link in links]
+    hit = [r for r in mine if why or any(h & names[r["id"]] for _, h in wanted)]
+    for r in hit:
+        log_event(cfg, "returned", why or r["text"], ref=routed_link(r), who=r.get("who") or "", corrects=r["id"])
+        print(f"closed {r['id']}: {r['text']} ({short_ref(cfg, routed_link(r)) or 'no link'})")
+    missed = [(link, h) for link, h in wanted if not any(h & names[r["id"]] for r in mine)]
+    for link, h in missed:
+        others = [f"{r.get('who') or '(no session)'} ({r['id']})" for r in routed_ if h & names[r["id"]]]
+        print(f"returned: no open row of {session}'s is on {link}" + (f"; open with {', '.join(others)}" if others else ""))
+    left = len(mine) - len(hit)
+    print(f"returned: {len(hit)} of {session}'s {len(mine)} closed" + (f", {left} still open" if left else ""))
+    return 1 if missed else 0
+
+
+def routed_link(row: dict) -> str:
+    """A routed row's link: its own, else the todo's it corrected (one logged without --ref)."""
+    return row.get("ref") or (row.get("began") or {}).get("ref") or ""
 
 
 def _age(at: dt.datetime) -> str:
@@ -1568,8 +1654,9 @@ def init(gh: Gh | None = None, example: Path | None = None) -> int:
 def main(argv=None, gh: Gh | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if (argv[:1] not in (["init"], ["config"], ["log"], ["panel"], ["queries"], ["routed"], ["feedback"],
-                         ["cron"], ["window"], ["trigger"], ["launch"], ["park"], ["unpark"], ["relooked"], ["owner"])
-            or (argv[0] in ("log", "routed", "feedback", "unpark", "relooked") and len(argv) < 2)):
+                         ["cron"], ["window"], ["trigger"], ["launch"], ["park"], ["unpark"], ["relooked"], ["owner"],
+                         ["returned"])
+            or (argv[0] in ("log", "routed", "feedback", "unpark", "relooked", "returned") and len(argv) < 2)):
         print(__doc__.split("run directly:", 1)[1].rstrip())
         return 2
     # `hub.py feedback --help` once wrote "--help" into feedback.md: these take text, no flags.
@@ -1659,6 +1746,8 @@ def main(argv=None, gh: Gh | None = None) -> int:
         return park_cmd(cfg, argv)
     if argv[0] == "relooked":
         return relooked_cmd(cfg, argv, gh)
+    if argv[0] == "returned":
+        return returned_cmd(cfg, argv)
     if argv[0] in ("cron", "window", "trigger", "launch"):
         return schedule_cmd(cfg, argv)
     if argv[0] == "panel":

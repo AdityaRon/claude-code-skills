@@ -22,12 +22,13 @@ graphql agrees.
 The scan writes to the log itself, each row once (`key=` in its detail): a
 `todo` per ROUTE item and per review or re-look, before the session starts the
 work; a `blocked` row needing the user for a scheduled message that posted with
-no re-gate since the window opened. It closes a todo GitHub shows is done, and a
-`reviewed` row once the user approves or the PR merges, or turns it into a
-re-look when the head moves. It logs a `tick` row naming the scheduled ticks
-since the previous scan that left no scan or tick row (a fire that fails
-before the session can act writes nothing), and records a full scan in
-tick.json when the plan is full and it does not end BLOCKED.
+no re-gate since the window opened, until a row corrects it. It closes a todo
+GitHub shows is done, a `routed` row whose PR merged or closed or whose ask was
+answered on it, and a `reviewed` row once the user approves or the PR merges,
+or turns it into a re-look when the head moves. It logs a `tick` row naming the
+scheduled ticks since the previous scan that left no scan or tick row (a fire
+that fails before the session can act writes nothing), and records a full scan
+in tick.json when the plan is full and it does not end BLOCKED.
 
 A scan that does not end BLOCKED replaces <state dir>/prs.json, which the panel
 reads: {"written_at": ISO, "reviewing": [PR], "authored": [PR]}, each PR
@@ -602,6 +603,15 @@ def todo_ref(row: dict) -> str:
 pr_ref = hub.pr_ref
 
 
+def routed_pr(row: dict) -> str:
+    """The PR a routed row is on: its link, else the todo's it corrected (its key, then its link)."""
+    first = row.get("began") or {}
+    return pr_ref(row.get("ref") or "") or pr_ref(todo_ref(first)) or pr_ref(first.get("ref") or "")
+
+
+FEW_IDS = 5  # with-sessions names each id up to this many; past it, a line per session
+
+
 def unregated_posts(cfg: dict, at: dt.datetime) -> list[dict]:
     """Scheduled messages that posted today with no re-gate this morning: the
     machine slept through the ticks between the window's start and post_at, so
@@ -663,14 +673,22 @@ def scan(cfg: dict, gh: hub.Gh, emit=print, wall_limit: float = WALL_LIMIT) -> i
         "(\"Not logged in\" logs nothing). Logged; say so in the report" if untraced else ""))
     # Every tick, not only the morning's: that tick can end before it re-gates.
     keys = logged_keys(cfg)
-    missed = unregated_posts(cfg, at)
+    by_key = hub.keyed(cfg)
+    # A row correcting its blocked row records the re-check: the gate records alone
+    # once listed a post answered at 10:20 again at 17:00.
+    missed = [s for s in unregated_posts(cfg, at)
+              if not (by_key.get(f"unregated:{s['sent_id']}") or {}).get("corrected")]
     for s in missed:
         if f"unregated:{s['sent_id']}" not in keys:
-            hub.log_event(cfg, "blocked", "posted without the morning re-gate", ref=(s.get("prs") or [""])[0].split(" ")[0],
-                          target=s.get("target", ""), needs_user=True, detail=f"key=unregated:{s['sent_id']}")
+            by_key[f"unregated:{s['sent_id']}"] = hub.log_event(
+                cfg, "blocked", "posted without the morning re-gate", ref=(s.get("prs") or [""])[0].split(" ")[0],
+                target=s.get("target", ""), needs_user=True, detail=f"key=unregated:{s['sent_id']}")
+    rows = ", ".join(f"{s['sent_id']}: {row.get('id', '?')}" for s in missed
+                     for row in [by_key.get("unregated:" + s["sent_id"]) or {}])
     emit(f"morning-unchecked: {len(missed)}" + (
         f" ({' '.join(s['sent_id'] for s in missed)}): posted with no re-gate since the window opened; re-check each "
-        "claim now and tell the user what moved" if missed else ""))
+        f"claim now and tell the user what moved, then record it on its row ({rows}): "
+        "hub.py log --kind answered --corrects ROW \"<what moved, or nothing>\"" if missed else ""))
     pruned = hub.prune_gate(cfg)
     if pruned:
         emit(f"gate-pruned: {pruned} record{'s' * (pruned != 1)} untouched for {hub.GATE_KEEP_DAYS} days")
@@ -688,8 +706,16 @@ def scan(cfg: dict, gh: hub.Gh, emit=print, wall_limit: float = WALL_LIMIT) -> i
     needs, routed_ = hub.open_items(cfg)
     emit(f"needs-you: {len(needs)}" + (f" ({' '.join(r['id'] for r in needs)}): carry each in the report until "
                                         "answered, then log the outcome with --corrects ID" if needs else ""))
-    emit(f"with-sessions: {len(routed_)}" + (f" ({' '.join(r['id'] for r in routed_)}): when a peer answers, "
-                                              "log --kind returned --corrects ID" if routed_ else ""))
+    # Ids only while few: 130 open made this line 1,140 characters every tick (reported 2026-11-16).
+    sessions = hub.by_session(routed_)
+    emit(f"with-sessions: {len(routed_)}" + (
+        "" if not routed_ else
+        f" ({' '.join(r['id'] for r in routed_)}): when a peer answers, log --kind returned --corrects ID"
+        if len(routed_) <= FEW_IDS else f" with {len(sessions)} session{'s' * (len(sessions) != 1)}: when one reports "
+        "back, close its rows with its line below"))
+    for who, n, age in sessions:
+        emit(f"  {who}: {n} open, oldest {age}: " + (f"hub.py returned {hub.shlex_quote(who)} LINK... | --all \"WHY\""
+                                                    if who != "(no session)" else "log --kind returned --corrects ID"))
     # What the user parked stays out of the status sections and the panel;
     # what asks something new of them still shows.
     parked = hub.parked(cfg)
@@ -789,6 +815,11 @@ def scan(cfg: dict, gh: hub.Gh, emit=print, wall_limit: float = WALL_LIMIT) -> i
     prev = read_prs(cfg)
     listed = {p["ref"] for p in (prev or {}).get("reviewing", []) + (prev or {}).get("authored", [])}
     extra = {pr_ref(r["ref"]) for r in waiting} | todo_refs | listed
+    # A routed row's PR too: no search returns one merged, and its row stayed with the session.
+    routed_refs = {routed_pr(r) for r in routed_} - {""}
+    # Read for its row alone: unread, the row stays open, and the queue is no less known.
+    routed_only = routed_refs - (refs | set(watched_items) | inbound_refs | reviewed_refs | extra)
+    extra |= routed_refs
     outbound, route, awaiting, drift, unknown = [], [], [], [], []
     with cf.ThreadPoolExecutor(max_workers=4) as pool:
         futures = {pool.submit(fetch_pr, gh, ref): ref
@@ -807,7 +838,10 @@ def scan(cfg: dict, gh: hub.Gh, emit=print, wall_limit: float = WALL_LIMIT) -> i
         try:
             details[ref] = fetch_pr(wider, ref)
         except hub.GhError as e:
-            unknown.append(f"{ref} UNKNOWN: {e} (after the wider re-read)")
+            if ref in routed_only:
+                emit(f"routed-unread: {ref}: {e}; its routed row stays open")
+            else:
+                unknown.append(f"{ref} UNKNOWN: {e} (after the wider re-read)")
     for ref in sorted(refs & set(details)):
         rows = classify(ref, details[ref], me)
         if rows["outbound"]:
@@ -851,7 +885,8 @@ def scan(cfg: dict, gh: hub.Gh, emit=print, wall_limit: float = WALL_LIMIT) -> i
     if time.time() - wall0 > wall_limit:
         blocked.append(f"the scan took more than {wall_limit:g}s of wall-clock time (the machine slept?); "
                        "what it read may be stale")
-    remember(cfg, emit, details, me, route, inbound_refs - set(reviewed_rows) - looked, reviewed_rows, todo, waiting)
+    remember(cfg, emit, details, me, route, inbound_refs - set(reviewed_rows) - looked, reviewed_rows, todo, waiting,
+             routed_, refs & set(details))
     if blocked:
         emit("prs: not written (BLOCKED); the panel keeps the last scan's, with its age")
     else:
@@ -884,10 +919,11 @@ def scan(cfg: dict, gh: hub.Gh, emit=print, wall_limit: float = WALL_LIMIT) -> i
 
 
 def remember(cfg: dict, emit, details: dict, me: str, route: list[dict], to_review: set[str], relook: dict,
-             todo: list[dict], waiting: list[dict]) -> None:
+             todo: list[dict], waiting: list[dict], routed: list[dict] = (), classified: set[str] = frozenset()) -> None:
     """Write the tick's work to the log before the session starts it, so a
     compaction mid-tick resumes from disk (one once rebuilt the PR state and
-    lost an ask), and close what GitHub shows is done."""
+    lost an ask), and close what GitHub shows is done. `classified`: the PRs
+    whose asks this scan read, so an ask missing from `route` is answered."""
     keys, new, closed = logged_keys(cfg), [], []
     route_keys = set()
     for r in route:
@@ -934,6 +970,22 @@ def remember(cfg: dict, emit, details: dict, me: str, route: list[dict], to_revi
         elif sha and sha != pr["headRefOid"] and not r["text"].startswith("re-look"):
             closed.append(hub.log_event(cfg, "reviewed", "re-look: new commits since the review", ref=r["ref"],
                                         needs_user=True, corrects=r["id"], detail=f"sha={sha}"))
+    # A routed ROUTE item corrected its todo, so the close above no longer reached
+    # it: it stayed with the session after its PR merged, until it aged out.
+    for r in routed:
+        ref = routed_pr(r)
+        pr = details.get(ref)
+        if not pr:
+            continue  # no PR, or unread: the session's still
+        key = hub.row_key(r)
+        if pr["state"] in ("MERGED", "CLOSED"):
+            why = f"{pr['state'].lower()} before the peer reported back"
+        elif key.startswith("route:") and key not in route_keys and ref in classified:
+            why = "answered on the PR"
+        else:
+            continue
+        closed.append(hub.log_event(cfg, "returned", why, ref=hub.routed_link(r) or pr["url"], who=r.get("who") or "",
+                                    corrects=r["id"]))
     emit(f"logged: {len(new)} in-flight" + (f" ({' '.join(x['id'] for x in new)})" if new else "")
          + f", {len(closed)} closed" + (f" ({' '.join(x['corrects'] for x in closed)})" if closed else ""))
 
