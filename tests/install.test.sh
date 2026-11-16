@@ -112,13 +112,24 @@ grep -qF 'Skills changed' <<<"$OUT" && grep -qF "claude respawn <job>" <<<"$OUT"
 ! grep -qE 'again:.*/memory-archive' <<<"$OUT" && pass "an unchanged skill is not named" || fail "unchanged skill named" "$OUT"
 
 echo ""
-echo "=== the first install over a tree the harness installed removes nothing ==="
+echo "=== the first install over a tree the harness installed: nothing removed, changes named ==="
+# The harness's tree: this release's files, no record of this installer's, an
+# older panel hook and a script an older harness shipped.
 export HOME="$TMP/home2"; S="$HOME/.claude/skills"
-mkdir -p "$S/comms-hub/bin"
+bash "$REPO/install.sh" >/dev/null 2>&1; rm -f "$HOME/.claude/skills.manifest"
 echo 'a script an older harness shipped' > "$S/comms-hub/bin/old_tool.py"
+echo '// an older panel' > "$S/comms-hub/panel/hooks/register.tsx"
 OUT=$(bash "$REPO/install.sh" 2>&1)
-[[ -f "$S/comms-hub/bin/old_tool.py" ]] && ! grep -qE 'Dropped|changed' <<<"$OUT" \
-  && pass "no record of its own yet: nothing removed or reported" || fail "first install over the harness's tree" "$OUT"
+[[ -f "$S/comms-hub/bin/old_tool.py" ]] && ! grep -qF 'Dropped' <<<"$OUT" \
+  && pass "no record of its own yet: nothing removed" || fail "first install over the harness's tree" "$OUT"
+grep -qF "again: /comms-hub"$'\n' <<<"$OUT" && grep -qF "claude respawn <job>" <<<"$OUT" && grep -qF "$S/comms-hub/panel/hooks/register.tsx" <<<"$OUT" \
+  && pass "the panel that differs from the harness's copy is named, and only its skill" || fail "first-run panel change" "$OUT"
 ! grep -qF 'old_tool.py' "$HOME/.claude/skills.manifest" && pass "and the record holds only what it wrote" || fail "record" ""
+
+echo ""
+echo "=== a first install into an empty tree reports no change ==="
+export HOME="$TMP/home3"; S="$HOME/.claude/skills"
+OUT=$(bash "$REPO/install.sh" 2>&1); RC=$?
+[[ $RC == 0 ]] && ! grep -qE 'changed|Dropped' <<<"$OUT" && pass "nothing reported" || fail "empty first install" "rc=$RC $OUT"
 
 results

@@ -20,7 +20,17 @@ place() {  # SRC DEST [MODE]
 
 mkdir -p "$SKILLS"
 WROTE=$(mktemp "$HOME/.claude/.skills.wrote.XXXXXX")
-trap 'rm -f "$WROTE" "$WROTE.next"' EXIT
+BEFORE=$(mktemp "$HOME/.claude/.skills.before.XXXXXX")
+trap 'rm -f "$WROTE" "$WROTE.next" "$BEFORE" "$BEFORE.list"' EXIT
+
+# What this release's skills hold on disk before it writes, "<blob> <path>": a
+# change is measured against these bytes, not the record, so the first run over
+# a tree claude-code-harness installed still names a changed panel.
+( cd "$SKILLS" && for skill in "$REPO"/skills/*/; do
+    n=$(basename "$skill")
+    if [[ -d "$n" ]]; then find -L "$n" -type f; fi
+  done ) | LC_ALL=C sort > "$BEFORE.list"
+( cd "$SKILLS" && git hash-object --no-filters --stdin-paths < "$BEFORE.list" ) | paste -d' ' - "$BEFORE.list" > "$BEFORE"
 put() {  # SRC DEST: place it, and record DEST as written by this install
   place "$1" "$2"
   printf '%s\n' "${2#"$SKILLS"/}" >> "$WROTE"
@@ -83,18 +93,21 @@ LC_ALL=C sort -u "$WROTE" -o "$WROTE"
 ( cd "$SKILLS" && git hash-object --no-filters --stdin-paths < "$WROTE" ) | paste -d' ' - "$WROTE" > "$WROTE.next"
 
 # ---- What changed, and what a release dropped --------------------------------
-# Only against an earlier record of this script's own. The first run over a tree
-# claude-code-harness installed has none, so it removes nothing: the harness's
-# copies are this release's files, byte for byte, and the record starts here.
+# Changed: a file written with other bytes than it had, or new beside them. A
+# first install, into a tree that held none of these skills, reports nothing.
 CHANGED="" PANEL="" REMOVED="" KEPT=""
-if [[ -f "$MANIFEST" ]]; then
-  REAL=$(cd "$SKILLS" && pwd -P)
+if [[ -s "$BEFORE" ]]; then
   while read -r rel; do
     [[ -n "$rel" ]] || continue
     s=${rel%%/*}
     case " $CHANGED " in *" /$s "*) ;; *) CHANGED="$CHANGED /$s" ;; esac
-    [[ "$rel" == */panel/* ]] && PANEL="$PANEL  $SKILLS/$rel"
-  done < <(awk 'NR == FNR { old[$2] = $1; next } old[$2] != $1 { print $2 }' "$MANIFEST" "$WROTE.next")
+    if [[ "$rel" == */panel/* ]]; then PANEL="$PANEL  $SKILLS/$rel"; fi
+  done < <(awk 'NR == FNR { old[$2] = $1; next } old[$2] != $1 { print $2 }' "$BEFORE" "$WROTE.next")
+fi
+# Removal only against an earlier record of this script's own. The first run over
+# a tree claude-code-harness installed has none, so it removes nothing.
+if [[ -f "$MANIFEST" ]]; then
+  REAL=$(cd "$SKILLS" && pwd -P)
   while read -r blob rel; do
     [[ -n "${rel:-}" && "$rel" != *..* && "$rel" != /* ]] || continue
     dest="$SKILLS/$rel"
