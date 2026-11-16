@@ -84,6 +84,11 @@ Mutations (run.py --mutate applies each and expects this file to fail):
   ack-unvalidated: hub.py: `if not re.fullmatch(r"[\w+'.-]+", ack):` => `if False:`
   control-not-earlier: hub.py: `since -= dt.timedelta(days=CONTROL_DAYS)` => `pass`
   queries-any-flag: hub.py: `if argv[1:] not in ([], ["--control"]):` => `if False:`
+  page-size-unprinted: hub.py: `print(f"page: {size} hits on every page` => `(f"page: {size} hits on every page`
+  page-size-config-ignored: hub.py: `size = cfg["slack"]["search_page_size"]` => `size = 20`
+  page-size-no-default: hub.py: `setdefault("search_page_size", 20)` => `get("search_page_size")`
+  page-size-unvalidated: hub.py: `or not isinstance(size, int) or size < 1:` => `and False:`
+  control-page-unprinted: hub.py: `print("page: the smallest the search tool takes` => `("page: the smallest the search tool takes`
   launch-check-unrecorded: hub.py: `(state_dir(cfg) / "launch.json").write_text(` => `(state_dir(cfg) / "launch-unread.json").write_text(`
   stopped-transcript-trusted: hub.py: `if since and dt.datetime.fromtimestamp(transcript.stat().st_mtime, dt.timezone.utc) < since:` => `if False:`
   live-transcript-distrusted: hub.py: `transcript.stat().st_mtime, dt.timezone.utc) < since:` => `transcript.stat().st_mtime, dt.timezone.utc) > since:`
@@ -330,6 +335,10 @@ class Config(unittest.TestCase):
                 hub.load_config()
 
 
+PAGE = ("page: {} hits on every page of one search (slack.search_page_size); if a search's size changed between "
+        "its pages, read that search again from its first page")
+
+
 class MentionQueries(unittest.TestCase):
     def test_three_searches_dated_two_days_back_in_the_configured_zone(self):
         # 03:00 UTC on the 22nd is still the 21st in Los Angeles: two days back is the 19th.
@@ -359,6 +368,7 @@ class MentionQueries(unittest.TestCase):
             self.assertEqual(lines[3:], [
                 "reach: Tue 00:00 epoch=1792479600: page each search, newest first, until its oldest hit is at "
                 "or before this, or it runs out",
+                PAGE.format(20),
                 "then: hub.py queries --reached 1792602000 --oldest <each search's oldest hit read, its ts or "
                 "permalink, or end where it ran out>"])
             # A search whose oldest hit is after the reach stopped short: nothing recorded.
@@ -398,6 +408,21 @@ class MentionQueries(unittest.TestCase):
                          ["1792602000", "--oldest", "end", "yesterday", "end"]):
                 self.assertEqual(self.queries("--reached", *args)[0], 2, args)
             self.assertFalse((env.state / "tick.json").exists())
+
+    def test_every_page_of_one_search_asks_for_the_same_size(self):
+        # A search paged by number can skip hits when its size changes between pages; no script sees the pages.
+        with Env(now="2026-10-21T17:00:00Z"):
+            self.assertEqual(self.queries()[1][4], PAGE.format(20), "the default, with no key in the config")
+            rc, lines = self.queries("--control")
+            self.assertEqual(lines[3:], ["page: the smallest the search tool takes, since one row proves the control; "
+                                         "a search of its own, so its size is not the mention searches'"])
+        sized = CONFIG.replace('my_user_id = "user-me"', 'my_user_id = "user-me"\nsearch_page_size = 50')
+        with Env(now="2026-10-21T17:00:00Z", config=sized):
+            self.assertEqual(self.queries()[1][4], PAGE.format(50))
+        for bad in ("0", '"20"', "true"):
+            with Env(config=CONFIG.replace('my_user_id = "user-me"', f'my_user_id = "user-me"\nsearch_page_size = {bad}')):
+                with self.assertRaisesRegex(hub.ConfigError, "slack.search_page_size must be a whole number"):
+                    hub.load_config()
 
     def test_the_control_is_the_same_searches_a_week_further_back(self):
         out = io.StringIO()

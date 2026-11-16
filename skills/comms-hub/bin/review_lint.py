@@ -21,7 +21,7 @@ Needs you with its verdict: approvable when every finding is a nit or a
 consider, else needs your read. The scan turns that into a re-look when the
 head moves, and closes it when the user approves or it merges.
 A review from this session is a COMMENT and nothing else: it never approves or
-requests changes, since approval is the human's.
+requests changes, nor closes on a "Net:" verdict, since approval is the human's.
 Exit 0 pass (posted with --apply; without it nothing posted or logged, and the
 last line says NOT POSTED), 1 refused, 2 usage or config, 3 live state unknown
 or the post failed: nothing was logged, so the review is still to do.
@@ -40,6 +40,15 @@ import check_draft as cd  # noqa: E402
 import hub  # noqa: E402
 
 
+# pr-review closes a review "Net: approving". From here the review posts as a
+# COMMENT under the user's account before they have read it, and its verdict is
+# logged for them alone, so a "Net:" close would state an approval not given.
+# The close itself, at a line or sentence start, bold or not: a list of verdict
+# words could not name every way to write one. Capital N and one colon, so a
+# quoted `net: host` key or Ruby's `Net::HTTP` is not a verdict.
+VERDICT = re.compile(r"(?:^|[.!?;]\s+)[\s>*_-]*Net[*_]*\s*:(?!:)")
+
+
 def lint(text: str, cap: int) -> list[str]:
     out = []
     if not text.strip():
@@ -50,6 +59,9 @@ def lint(text: str, cap: int) -> list[str]:
     for n, line in enumerate(text.splitlines(), 1):
         if cd.EM_DASH in line:
             out.append(f"line {n}: em dash")
+        if VERDICT.search(line):
+            out.append(f'line {n}: a "Net:" verdict: this review posts as a COMMENT before the user reads it, '
+                       "so it carries findings only; the verdict is logged for them")
     if cd.TOKEN.search(text):
         out.append("a token-shaped string: no secrets in a review")
     return out

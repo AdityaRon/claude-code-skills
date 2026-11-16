@@ -20,6 +20,7 @@ review_max_chars = 2500        # review_lint.py refuses a longer review body
 primary_dm = "CHANGE-ME"       # channel id of the one DM read in full each tick
 watched_channels = []          # channel ids read like the DM each tick: first page in full, no `oldest`
 my_user_id = "CHANGE-ME"       # your Slack member id, for the mention search
+search_page_size = 20          # hits asked for on every page of a mention search: a chosen size, any the search tool takes
 max_chars = 2500               # check_draft.py refuses a longer message
 ack_reaction = "white_check_mark"  # the emoji a review request gets when your review on GitHub answers it; workspaces name theirs differently
 # Ticket projects whose keys check_draft.py fails unless linked. Unset, the

@@ -200,7 +200,7 @@ whole context.
    stay in the file, not in this session's context:
 
    ```json
-   {"head": "<the head: line, all 40 characters>", "body": "<findings only, no verdict>",
+   {"head": "<the head: line, all 40 characters>", "body": "<findings only, no verdict, no Net: line>",
     "comments": [{"path": "src/a.py", "line": 3, "side": "RIGHT", "body": "<one finding>"}],
     "findings": [{"kind": "nit"}, {"kind": "question"}], "escalate": "<why the user must read it; leave out if nothing>"}
    ```
@@ -279,14 +279,14 @@ whole context.
      ambiguous. An empty search counts as quiet only when the same query from
      `PY B/hub.py queries --control` (a week further back) returns rows (for
      the bare search, rows holding `<@my_user_id>`): a misfired control
-     returns rows too. Ask the control for the smallest page, since one such
-     row proves it. Empty too, the search is not working, so say mentions are
-     unknown, never quiet.
+     returns rows too. The control is its own search, at its `page:` line's
+     size. Empty too, the search is not working, so say mentions are unknown,
+     never quiet.
      Then check each search reached far enough: one page of the with: search
      once held only the last hour, and nothing said the rest was unread. The
      `reach:` line `queries` prints is where the last searches that all got
-     back started, less 5 minutes. Read each search's pages, newest first,
-     until its oldest hit is at or before the reach, or it has no next page.
+     back started, less 5 minutes. Page each search as that line and the
+     `page:` line say: newest first, at one size, back to the reach.
      Then run the `then:` line with each search's oldest hit read (its ts or
      permalink), in the printed order, or `end` for one that ran out: the
      reach moves up for the next tick only when every search got back to it.
@@ -395,7 +395,7 @@ whole context.
      the parent thread and compare its reply count with the one read before
      the send; for a top-level message, re-read the channel's first page and
      find the ts. Then
-     `PY B/check_draft.py <file> --record-sent <message ts or scheduled id> --replies <before> <after> --context "<who asked what>" --peer <the session that sent the draft>`
+     `PY B/check_draft.py <file> --record-sent <message ts or permalink, or scheduled id> --replies <before> <after> --context "<who asked what>" --peer <the session that sent the draft>`
      keeps a copy and logs it; it refuses a count that did not move. A
      scheduled reply cannot move the count before it posts: record it without
      `--replies`, and with `--post-at HH:MM` when you scheduled it later than
@@ -403,8 +403,8 @@ whole context.
      characters, names in words. `--peer` (the header's `from:` when left
      out) makes that session the owner of the thread's replies for two weeks
      (step 3), and its `owner:` line says so; leave it out for a message the
-     user asked for themselves. The owner comes from the header's `to:`
-     channel: without one, `owner:` names the `hub.py owner` command to run.
+     user asked for themselves. The channel is the header's `to:`: with no
+     header, pass `--channel <id>` unless the ID is a permalink.
      Answer the peer with the ts or id.
 5. **Log**: one event per item, which the panel shows as one line:
    `PY B/hub.py log --kind <kind> [--ref <PR or ticket link>] [--target <channel id>] [--who <person or session>] [--detail "<the rest>"] "<what, in words>"`.

@@ -6,12 +6,15 @@ same turn.
                                                    shape, live PR state, send mode; records a pass
   check_draft.py FILE --assert-fresh [--max-age S]  the bytes are the ones that passed, recently
   check_draft.py FILE --record-sent ID [--replies BEFORE AFTER] [--context TEXT] [--post-at HH:MM]
-                 [--peer SESSION]
+                 [--peer SESSION] [--channel ID]
                                                    after sending: keep a copy, log it, retire the pass;
+                                                   ID: the message's ts or permalink, or the scheduled id;
                                                    --context: who asked what, the headline the panel shows
                                                    (80 characters, names in words, no ids or links);
                                                    --peer (else the header's `from:`): the session that
-                                                   drafted it, which owns the replies in its thread
+                                                   drafted it, which owns the replies in its thread;
+                                                   --channel (else the header's `to:`, else the
+                                                   permalink's): the channel of that thread
   check_draft.py --scheduled                       scheduled messages not yet posted, with the copy to re-gate
   check_draft.py --withdrawn ID [--context WHY]    a scheduled message deleted before it posted
 
@@ -25,11 +28,15 @@ Live state: a line that links a merged or closed PR and calls it awaiting,
 pending or open fails. A line that asks for a review fails when an addressee
 has already reviewed the PR's current head (approved, requested changes, or a
 comment review with a body; a bodiless COMMENTED is a thread reply): a review
-ask once went out minutes after the approval. The addressees are --asks (GitHub logins)
-and every <@id> the draft mentions that slack.github_logins maps to a login.
+ask once went out minutes after the approval. An ask covers the PRs its line
+links, or the draft's when it links none. The addressees are --asks (GitHub
+logins) and each <@id> on the ask's line that slack.github_logins maps to a
+login, or every one the draft mentions when the line has none.
 It is the addressee's own review that counts, not the PR's decision: another
 reviewer's approval failed an ask once. An ask with no addressee fails, so it
-cannot slip by.
+cannot slip by. Either check fails only when every PR it covers qualifies;
+when some do, it is a WARN naming them ("could you review #12? It builds on
+#13, which you approved" once failed on #13).
 
 Restating: a line that only restates my own review, which GitHub already shows,
 says nothing new and can go stale (a reviewer asked for approvals to stay out of
@@ -70,6 +77,7 @@ CODE = re.compile(r"```.*?```|`[^`\n]*`", re.S)
 # "1234567" a number), not part of a word, a path, a version or a longer digest.
 COMMIT = re.compile(r"(?<![\w/.:-])(?=[0-9a-f]*[0-9])(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}(?![\w/-]|\.\w)")
 TS = re.compile(r"\d{10}\.\d{6}")
+ARCHIVES = re.compile(r"/archives/([^/?#\s]+)/p\d{16}")  # a permalink's channel
 # The samples vendors publish, which secret-scanner lets through too: an AWS key
 # ending EXAMPLE, jwt.io's signature, and a placeholder for a URL's password.
 AWS_SAMPLE = r"(?![0-9A-Z]{9}EXAMPLE)"
@@ -210,36 +218,60 @@ def live_state(gh: hub.Gh, prs) -> tuple[list[str], bool, dict[tuple, dict]]:
     return lines, ok, live
 
 
-def claim_problems(text: str, live: dict[tuple, dict], asks: list[str]) -> list[str]:
-    """Lines whose words no longer match the linked PR's live state."""
-    out = []
+def pr_name(pr: tuple) -> str:
+    return f"{pr[0]}/{pr[1]}#{pr[2]}"
+
+
+def claim_problems(text: str, live: dict[tuple, dict], given: list[str], logins: dict) -> tuple[list[str], list[str]]:
+    """Lines whose words no longer match the linked PRs' live state, as (fails,
+    warns). A line fails only when every PR it is about qualifies, and otherwise
+    warns naming those that do: an ask once failed on the PR its line named as
+    the base, which the addressee had approved."""
+    fails, warns = [], []
     every = linked_prs(text)
     for n, line in enumerate(text.splitlines(), 1):
         here = linked_prs(line)
+        m = AWAITING.search(line)
+        gone = {}
         for pr in here:
             d = live.get(pr)
             if not d:
                 continue
-            m = AWAITING.search(line)
             if d.get("state") in ("MERGED", "CLOSED") and m:
-                out.append(f"line {n}: calls {d['state'].lower()} {pr[0]}/{pr[1]}#{pr[2]} {m.group(0)!r}")
+                gone[pr] = f"line {n}: calls {d['state'].lower()} {pr_name(pr)} {m.group(0)!r}"
+        if gone and all(pr in gone for pr in here):
+            fails += gone.values()
+        elif gone:
+            rest = ", ".join(pr_name(pr) for pr in here if pr not in gone)
+            warns += [f"{s}; it may send if the word is about {rest}" for s in gone.values()]
         if not ASK.search(line):
             continue
+        # The ask's addressees: --asks, and each <@id> on its line, or the draft's when the line has
+        # none: a thank-you to an approver on another line once failed an ask to someone else.
+        asks = addressees(line if MENTION.search(line) else text, given, logins)[0]
+        done: dict[str, dict] = {login: {} for login in asks}
         for pr in here or every:
-            ref = f"{pr[0]}/{pr[1]}#{pr[2]}"
+            ref = pr_name(pr)
             d = live.get(pr)
             if not d:
                 continue
             if not asks:
-                out.append(f"line {n}: asks for a review of {ref}; name the addressee with --asks LOGIN "
-                           "so their own review can be checked")
+                fails.append(f"line {n}: asks for a review of {ref}; name the addressee with --asks LOGIN "
+                             "so their own review can be checked")
                 continue
             for login in asks:
                 r = d["at_head"].get(login.lower())
                 if r:
-                    out.append(f"line {n}: asks {login} to review {ref}, which they already reviewed "
-                               f"({r['state']}) {r.get('submittedAt')} at the current head")
-    return out
+                    done[login][pr] = (f"line {n}: asks {login} to review {ref}, which they already reviewed "
+                                       f"({r['state']}) {r.get('submittedAt')} at the current head")
+        scope = here or every
+        for login, said in done.items():
+            if said and all(pr in said for pr in scope):
+                fails += said.values()
+            elif said:
+                rest = ", ".join(pr_name(pr) for pr in scope if pr not in said)
+                warns += [f"{s}; it may send if the ask is for {rest}" for s in said.values()]
+    return fails, warns
 
 
 def my_review(d: dict, me: str) -> dict | None:
@@ -325,7 +357,8 @@ def gate(args, cfg, gh) -> int:
                         f"({max(args.answers, key=ts_key)}): a combined reply threads under the newest")
     lines, known, live = live_state(gh, linked_prs(text))
     asks, unmapped = addressees(text, args.asks, cfg["slack"]["github_logins"])
-    problems += claim_problems(text, live, asks)
+    fails, doubts = claim_problems(text, live, args.asks, cfg["slack"]["github_logins"])
+    problems += fails
     restating, more = restatements(text, live, cfg["github"]["login"].lower())
     react = bool(restating) and not more
     print(f"target: {target}")
@@ -351,6 +384,8 @@ def gate(args, cfg, gh) -> int:
               + " (scheduled messages cannot be edited through the API: hold it instead if a fold-in is expected)")
     for r in [] if react else restating:
         print(f"WARN: {r}: cut it unless the message needs it")
+    for w in doubts:
+        print(f"WARN: {w}")
     words = len(text.split())
     if args.reply and not react and words > REPLY_WORDS:
         print(f"WARN: {words} words, over {REPLY_WORDS} for a thread reply: keep what GitHub cannot say")
@@ -368,9 +403,12 @@ def gate(args, cfg, gh) -> int:
     if not known:
         print("BLOCKED: a linked PR's live state is unknown; the claims cannot be checked")
         return 3
+    # --asks as given, which --scheduled lists for the re-gate: a mention's login there would
+    # be checked on every ask line, not only on the line that mentions it.
     stamp = {"path": os.path.realpath(args.file), "sha256": hub.sha256(data),
              "passed_at": hub.now().timestamp(), "target": target, "send": mode,
-             "post_at": post.isoformat() if post else None, "prs": lines, "asks": asks, "answers": args.answers}
+             "post_at": post.isoformat() if post else None, "prs": lines, "asks": args.asks,
+             "answers": args.answers}
     regate_of = mark_regate(cfg, args.file, True)
     if regate_of:
         stamp["regate_of"] = regate_of
@@ -508,10 +546,10 @@ def record_sent(args, cfg) -> int:
     detail = (f"id={args.record_sent} target={stamp['target']} sha256={stamp['sha256'][:12]}"
               + (f" post_at={stamp['post_at']}" if stamp.get("post_at") else "")
               + (f"; {context}" if problem and context else ""))
-    hub.log_event(cfg, verb, text, ref=first_ref(stamp), target=hub._draft(args.file).get("to", "").split(" ")[0],
-                  detail=detail)
+    channel = sent_channel(args)
+    hub.log_event(cfg, verb, text, ref=first_ref(stamp), target=channel, detail=detail)
     print(f"recorded {verb} {args.record_sent}: sent/{day}/{safe}.md")
-    note_owner(args, cfg, stamp)
+    note_owner(args, cfg, stamp, channel)
     for h in covered(cfg, stamp, data):
         shutil.move(h, d / f"held-{h.name}")
         hub.log_event(cfg, "released", "held draft went out", ref=first_ref(stamp),
@@ -521,17 +559,25 @@ def record_sent(args, cfg) -> int:
     return 0
 
 
-def note_owner(args, cfg, stamp: dict) -> None:
+def sent_channel(args) -> str:
+    """The channel a send went to: --channel, else the header's `to:`, else a permalink's."""
+    link = ARCHIVES.search(args.record_sent)
+    return args.channel or (hub._draft(args.file).get("to", "").split() or [""])[0] or (link.group(1) if link else "")
+
+
+def note_owner(args, cfg, stamp: dict, channel: str) -> None:
     """The peer that drafted a send owns the replies in its thread, so one there
     routes back to it. Sends kept no thread or peer, and replies in threads no
     routing entry covers were routed from memory, or late."""
     head = hub._draft(args.file)
-    channel = (head.get("to", "").split() or [""])[0]
     peer = (args.peer or head.get("from", "")).strip()
+    scheduled = stamp["send"] == "schedule"
     if stamp["target"].startswith("reply:"):
         thread = stamp["target"].split(":", 1)[1]
     else:
-        thread = args.record_sent if stamp["send"] != "schedule" and TS.fullmatch(args.record_sent) else ""
+        # A top-level message is its own thread. Its ts, from a ts, a permalink or the permalink's `p` path:
+        # a permalink once printed that a live send was a scheduled one.
+        thread = "" if scheduled else (hub.slack_ts(args.record_sent) or [""])[0]
     if not peer:
         print("owner: none (no --peer, no `from:` in the header): a reply in this thread routes by repo, ticket "
               "or channel, or is asked about")
@@ -539,8 +585,13 @@ def note_owner(args, cfg, stamp: dict) -> None:
         hub.own_thread(cfg, channel, thread, peer)
         print(f"owner: {peer} owns the replies in {channel} {thread}")
     else:
-        print(f"owner: not recorded, {'the header has no `to:`' if not channel else 'a scheduled message has no ts yet'}"
-              f": once you have it, `hub.py owner <channel> <thread ts> {peer}`")
+        why = ["the header has no `to:`"] * (not channel)
+        if not thread:
+            why.append("a scheduled message has no ts yet" if scheduled
+                       else f"{args.record_sent!r} is no ts or permalink")
+        print(f"owner: not recorded, {' and '.join(why)}: once you have {'it' if len(why) == 1 else 'them'}, "
+              f"`hub.py owner {channel or '<channel>'} <thread ts> {peer}`"
+              + (" (next time, a draft with no header takes `--record-sent ID --channel <id>`)" if not channel else ""))
 
 
 def covered(cfg, stamp: dict, data: bytes) -> list:
@@ -614,6 +665,8 @@ def main(argv=None, gh=None) -> int:
     ap.add_argument("--post-at", metavar="HH:MM", help="with --record-sent: the time it was scheduled for, if later")
     ap.add_argument("--peer", metavar="SESSION", help="with --record-sent: the session that drafted it, which owns "
                                                       "the replies in its thread; the header's `from:` otherwise")
+    ap.add_argument("--channel", metavar="ID", help="with --record-sent: the channel it went to, for a draft with "
+                                                    "no `to:` header; a permalink ID names its own")
     ap.add_argument("--config")
     args = ap.parse_args(argv)
     try:
