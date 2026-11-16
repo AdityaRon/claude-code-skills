@@ -25,6 +25,8 @@ Mutations (run.py --mutate applies each and expects this file to fail):
   todo-left-open: review_lint.py: `hub.log_event(cfg, "done", "review posted", ref=row["ref"], corrects=t["id"])` => `pass`
   rows-pile-up: review_lint.py: `corrects=old["id"] if old else "",` => `corrects="",`
   net-verdict-ok: review_lint.py: `if VERDICT.search(line):` => `if False:`
+  net-any-case: review_lint.py: `VERDICT = re.compile(r"(?:^` => `VERDICT = re.compile(r"(?i)(?:^`
+  net-double-colon: review_lint.py: `\s*:(?!:)")` => `\s*:")`
   failed-post-logged: review_lint.py:`print(f"BLOCKED: the post failed, so nothing was logged and the review is still to do: {e}")
         return 3` => `res = {}`
 """
@@ -87,13 +89,17 @@ class Lint(unittest.TestCase):
         with Env() as env:
             for text, n in (("One nit: the retry loop never backs off (src/a.py:3).\n\nNet: approving\n", 3),
                             ("**Net:** LGTM\n", 1), ("- **Net**: approve once #2 is answered\n", 1),
-                            ("Two nits, neither blocking. Net: approving.\n", 1)):
+                            ("Two nits, neither blocking. Net: approving.\n", 1),
+                            ("Net: two nits, one question\n", 1)):
                 rc, out = run(env, text)
                 self.assertEqual(rc, 1, text)
                 self.assertIn(f'FAIL: line {n}: a "Net:" verdict: this review posts as a COMMENT', out)
                 self.assertNotIn("PASS", out)
             for text in ("The handler approves every request it is sent (src/a.py:3).\n",
-                         "Subnet: the 10.0.0.0/8 range is hardcoded (src/net.py:9).\n"):
+                         "Subnet: the 10.0.0.0/8 range is hardcoded (src/net.py:9).\n",
+                         "The config sets the wrong key:\n  net: host\nso the pod shares the node's ports.\n",
+                         "It fails here. net::ERR_FAILED shows in the console (src/a.js:4).\n",
+                         "Net::HTTP.get(uri) has no timeout here (lib/fetch.rb:12).\n"):
                 rc, out = run(env, text)
                 self.assertEqual(rc, 0, out)
 

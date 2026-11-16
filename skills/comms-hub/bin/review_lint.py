@@ -44,8 +44,9 @@ import hub  # noqa: E402
 # COMMENT under the user's account before they have read it, and its verdict is
 # logged for them alone, so a "Net:" close would state an approval not given.
 # The close itself, at a line or sentence start, bold or not: a list of verdict
-# words could not name every way to write one.
-VERDICT = re.compile(r"(?i)(?:^|[.!?;]\s+)[\s>*_-]*net[*_]*\s*:")
+# words could not name every way to write one. Capital N and one colon, so a
+# quoted `net: host` key or Ruby's `Net::HTTP` is not a verdict.
+VERDICT = re.compile(r"(?:^|[.!?;]\s+)[\s>*_-]*Net[*_]*\s*:(?!:)")
 
 
 def lint(text: str, cap: int) -> list[str]:
