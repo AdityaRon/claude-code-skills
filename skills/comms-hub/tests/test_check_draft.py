@@ -31,6 +31,11 @@ Mutations (run.py --mutate applies each and expects this file to fail):
   ask-old-head-fails: check_draft.py: `if (r.get("commit") or {}).get("oid") == head and hub.login(r.get("author")):` => `if hub.login(r.get("author")):`
   thread-reply-is-a-review: check_draft.py: `or (r.get("state") == "COMMENTED" and not (r.get("body") or "").strip())` => ``
   ask-off-line-missed: check_draft.py: `for pr in here or every:` => `for pr in here:`
+  ask-all-is-any: check_draft.py: `if said and all(pr in said for pr in scope):` => `if said and any(pr in said for pr in scope):`
+  ask-mentions-unscoped: check_draft.py: `asks = addressees(line if MENTION.search(line) else text, given, logins)[0]` => `asks = addressees(text, given, logins)[0]`
+  awaiting-all-is-any: check_draft.py: `if gone and all(pr in gone for pr in here):` => `if gone and any(pr in gone for pr in here):`
+  claim-warns-unprinted: check_draft.py: `for w in doubts:` => `for w in []:`
+  scheduled-asks-merged: check_draft.py: `"asks": args.asks,` => `"asks": asks,`
   en-dash-ok: check_draft.py: `if EN_DASH in line:` => `if False:`
   aws-temp-key-missed: check_draft.py: `(?:AKIA|ASIA)[0-9A-Z]{16}` => `AKIA[0-9A-Z]{16}`
   launchdarkly-key-missed: check_draft.py: `|(?:sdk|mob|api)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}` => ``
@@ -73,7 +78,7 @@ Mutations (run.py --mutate applies each and expects this file to fail):
   commit-without-a-letter: check_draft.py: `(?=[0-9a-f]*[0-9])(?=[0-9a-f]*[a-f])` => `(?=[0-9a-f]*[0-9])`
   schedule-thread-unsaid: check_draft.py: `f" thread_ts={args.reply} (pass it to the schedule tool too, or the reply posts top-level)"` => `""`
   held-kept-on-send: check_draft.py: `    for h in covered(cfg, stamp, data):` => `    for h in []:`
-  held-answers-ignored: check_draft.py: `"prs": lines, "asks": asks, "answers": args.answers}` => `"prs": lines, "asks": asks}`
+  held-answers-ignored: check_draft.py: `"answers": args.answers}` => `}`
   held-any-thread: check_draft.py: `if thread in threads or message(h)[0] == data:` => `if True:`
   held-same-bytes-ignored: check_draft.py: `if thread in threads or message(h)[0] == data:` => `if thread in threads:`
   long-reply-ok: check_draft.py: `if args.reply and not react and words > REPLY_WORDS:` => `if False:`
@@ -83,13 +88,19 @@ Mutations (run.py --mutate applies each and expects this file to fail):
   owner-header-wins: check_draft.py: `peer = (args.peer or head.get("from", "")).strip()` => `peer = (head.get("from") or args.peer or "").strip()`
   owner-from-unparsed: hub.py: `(to|from|kind|reason|needs)` => `(to|kind|reason|needs)`
   owner-of-the-reply-not-the-thread: check_draft.py: `thread = stamp["target"].split(":", 1)[1]` => `thread = args.record_sent`
-  owner-top-level-unowned: check_draft.py: `thread = args.record_sent if stamp["send"] != "schedule" and TS.fullmatch(args.record_sent) else ""` => `thread = ""`
-  owner-scheduled-id-as-thread: check_draft.py: `if stamp["send"] != "schedule" and TS.fullmatch(args.record_sent) else ""` => `if True else ""`
+  owner-top-level-unowned: check_draft.py: `thread = "" if scheduled else (hub.slack_ts(args.record_sent) or [""])[0]` => `thread = ""`
+  owner-scheduled-id-as-thread: check_draft.py: `thread = "" if scheduled else` => `thread =`
+  owner-ts-fullmatch: check_draft.py: `(hub.slack_ts(args.record_sent) or [""])[0]` => `(args.record_sent if TS.fullmatch(args.record_sent) else "")`
+  owner-p-path-unread: hub.py: `(?<!\w)p(\d{10})` => `/p(\d{10})`
+  owner-permalink-channel-ignored: check_draft.py: `or (link.group(1) if link else "")` => `or ""`
+  owner-channel-flag-ignored: check_draft.py: `return args.channel or (hub._draft` => `return (hub._draft`
+  owner-live-said-scheduled: check_draft.py: `"a scheduled message has no ts yet" if scheduled` => `"a scheduled message has no ts yet" if True`
 """
 import contextlib
 import io
 import json
 import os
+import re
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -333,6 +344,77 @@ class Claims(unittest.TestCase):
         rc, out = self.check(f"Two for you, mind taking a look?\n- {LINK}\n", "--asks", "bob", state=approved)
         self.assertEqual(rc, 1, out)
         self.assertIn("line 1: asks bob to review acme/app#12", out)
+
+    L13 = "<https://github.com/acme/app/pull/13|acme/app#13>"
+    BOB_13 = {12: PR_JSON, 13: {**PR_JSON, "reviews": [review("bob", "APPROVED")]}}
+
+    def by_number(self, text, states, *flags, config=CONFIG, now=DAY):
+        with Env(config=config) as env:
+            return gate(env, text, "--top-level", *flags, gh=FakeGh(rest={"pr view": lambda n, repo: states[n]}), now=now)
+
+    def test_an_ask_naming_a_pr_they_reviewed_beside_one_they_have_not_warns(self):
+        # The ask was for #12; #13, which bob had approved, was named as its base, and the gate failed.
+        rc, out = self.by_number(f"could you review {LINK}? It builds on {self.L13}, which you approved.\n",
+                                 self.BOB_13, "--asks", "bob")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("WARN: line 1: asks bob to review acme/app#13, which they already reviewed (APPROVED) "
+                      "2026-10-21T16:50:00Z at the current head; it may send if the ask is for acme/app#12\n", out)
+        self.assertIn("PASS", out)
+        rc, out = self.by_number(f"Mind taking a look?\n- {LINK}\n- {self.L13}, its base, which you approved\n",
+                                 self.BOB_13, "--asks", "bob")
+        self.assertEqual(rc, 0, "an ask on a line of its own, the same rule: " + out)
+        self.assertIn("WARN: line 1: asks bob to review acme/app#13", out)
+        both = {n: {**PR_JSON, "reviews": [review("bob", "APPROVED")]} for n in (12, 13)}
+        rc, out = self.by_number(f"could you review {LINK}? It builds on {self.L13}.\n", both, "--asks", "bob")
+        self.assertEqual(rc, 1, "every PR the ask covers reviewed at its head: " + out)
+        self.assertIn("FAIL: line 1: asks bob to review acme/app#12", out)
+        self.assertIn("FAIL: line 1: asks bob to review acme/app#13", out)
+        self.assertNotIn("WARN", out)
+
+    def test_a_pr_called_awaiting_beside_a_merged_one_warns(self):
+        # "#12 is awaiting review; it follows #13" failed on #13, which had merged.
+        text = f"{LINK} is awaiting review; it follows {self.L13}.\n"
+        rc, out = self.by_number(text, {12: PR_JSON, 13: {**PR_JSON, "state": "MERGED"}})
+        self.assertEqual(rc, 0, out)
+        self.assertIn("WARN: line 1: calls merged acme/app#13 'awaiting'; it may send if the word is about "
+                      "acme/app#12\n", out)
+        rc, out = self.by_number(text, {n: {**PR_JSON, "state": "MERGED"} for n in (12, 13)})
+        self.assertEqual(rc, 1, out)
+        self.assertIn("FAIL: line 1: calls merged acme/app#12 'awaiting'", out)
+        self.assertIn("FAIL: line 1: calls merged acme/app#13 'awaiting'", out)
+
+    def test_an_ask_checks_the_people_its_own_line_mentions(self):
+        # A thank-you to carol, who had approved, failed the ask to bob on the line above it.
+        cfg = CONFIG + '\n[slack.github_logins]\n"user-bob" = "bob"\n"user-carol" = "carol"\n'
+        carol = fake({**PR_JSON, "reviews": [review("carol", "APPROVED")]})
+        with Env(config=cfg) as env:
+            rc, out = gate(env, f"<@user-bob> could you review {LINK}?\nThanks <@user-carol> for the approval.\n",
+                           "--top-level", gh=carol)
+            self.assertEqual(rc, 0, out)
+            self.assertIn("addressees: bob,carol", out)
+            self.assertNotIn("asks carol", out)
+            rc, out = gate(env, f"Could you review {LINK}?\nThanks <@user-carol> for the approval.\n",
+                           "--top-level", gh=carol)
+            self.assertEqual(rc, 1, "no mention on the ask's line: the draft's mentions are its addressees: " + out)
+            self.assertIn("asks carol to review acme/app#12", out)
+            rc, out = gate(env, f"<@user-zed> could you review {LINK}?\n", "--top-level", "--asks", "carol", gh=carol)
+            self.assertEqual(rc, 1, "an unmapped mention on the line, and --asks: " + out)
+            self.assertIn("asks carol to review acme/app#12", out)
+
+    def test_the_recheck_of_a_scheduled_ask_passes_the_asks_it_was_given(self):
+        # --scheduled lists asks= for the re-gate; carol's login from the thank-you there failed bob's ask.
+        cfg = CONFIG + '\n[slack.github_logins]\n"user-bob" = "bob"\n"user-carol" = "carol"\n'
+        carol = {**PR_JSON, "reviews": [review("carol", "APPROVED")]}
+        with Env(config=cfg) as env:
+            rc, out = gate(env, f"<@user-bob> could you review {LINK}?\nThanks <@user-carol> for the approval.\n",
+                           "--top-level", gh=fake(carol), now=EVENING)
+            self.assertEqual(rc, 0, out)
+            self.assertEqual(gate(env, None, "--record-sent", "Q0001", now=EVENING)[0], 0)
+            listed = re.search(r" asks=(\S+)", gate(env, None, "--scheduled", now=EVENING)[1])
+            asks = ["--asks", *listed.group(1).split(",")] if listed else []
+            rc, out = gate_file(env.state / "sent" / "2026-10-21" / "Q0001.md", "--top-level", *asks,
+                                gh=fake(carol), now=EVENING)
+            self.assertEqual(rc, 0, out)
 
 
 class Restates(unittest.TestCase):
@@ -712,6 +794,42 @@ class Owner(unittest.TestCase):
             gate(env, self.head(f"reply {parent}") + "later\n", "--reply", parent, gh=fake(), now=EVENING)
             rc, out = gate(env, None, "--record-sent", "Q0002", now=EVENING)
             self.assertIn(f"owner: app-session owns the replies in chan-one {parent}\n", out)
+
+    def test_a_top_level_send_is_owned_whatever_form_its_id_takes(self):
+        # A permalink or its `p` path read as a scheduled message's id, and a draft with no header had no channel.
+        ts = "1761044500.000300"
+        for n, (head, flags, channel) in enumerate((
+                (self.head("top-level"), ["https://acme.slack.com/archives/chan-one/p1761044500000300"], "chan-one"),
+                (self.head("top-level"), ["p1761044500000300"], "chan-one"),
+                (self.head("top-level"), [ts], "chan-one"),
+                ("", ["https://acme.slack.com/archives/chan-two/p1761044500000300", "--peer", "app-session"], "chan-two"),
+                ("", [ts, "--peer", "app-session", "--channel", "chan-three"], "chan-three"))):
+            with Env(now=DAY) as env:
+                self.assertEqual(gate(env, head + f"news {n}\n", "--top-level", gh=fake())[0], 0)
+                rc, out = gate(env, None, "--record-sent", *flags)
+                self.assertEqual(rc, 0, out)
+                self.assertIn(f"owner: app-session owns the replies in {channel} {ts}\n", out, flags)
+                self.assertEqual(self.owner(ts), "app-session", flags)
+                rows = [json.loads(ln) for ln in (env.state / "log" / "2026-10-21.jsonl").read_text().splitlines()]
+                self.assertEqual([r["target"] for r in rows if r["kind"] == "sent"], [channel], flags)
+
+    def test_an_owner_not_recorded_says_why(self):
+        with Env(now=DAY) as env:
+            gate(env, self.head("top-level") + "news\n", "--top-level", gh=fake())
+            rc, out = gate(env, None, "--record-sent", "msg-7")
+            self.assertEqual(rc, 0, out)
+            self.assertIn("owner: not recorded, 'msg-7' is no ts or permalink: once you have it, "
+                          "`hub.py owner chan-one <thread ts> app-session`\n", out, "a live send is not a scheduled one")
+            gate(env, "more news\n", "--top-level", gh=fake())
+            rc, out = gate(env, None, "--record-sent", "1761044600.000400", "--peer", "app-session")
+            self.assertIn("owner: not recorded, the header has no `to:`: once you have it, `hub.py owner <channel> "
+                          "<thread ts> app-session` (next time, a draft with no header takes "
+                          "`--record-sent ID --channel <id>`)\n", out)
+            gate(env, self.head("top-level") + "later\n", "--top-level", gh=fake(), now=EVENING)
+            rc, out = gate(env, None, "--record-sent", "1761044700.000500", now=EVENING)
+            self.assertIn("owner: not recorded, a scheduled message has no ts yet: once you have it, "
+                          "`hub.py owner chan-one <thread ts> app-session`\n", out, "its id is never its ts")
+            self.assertFalse((env.state / "threads.json").exists())
 
 
 class Held(unittest.TestCase):

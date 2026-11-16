@@ -647,13 +647,14 @@ def reached_cmd(cfg: dict, argv: list[str]) -> int:
 # A thread the hub sent into for a peer is that peer's this long after the last
 # send: its replies route back to it. A lookup, not a read, so no tick pays for it.
 THREAD_DAYS = 14
-_P_TS = re.compile(r"/p(\d{10})(\d{6})(?!\d)")
+_P_TS = re.compile(r"(?<!\w)p(\d{10})(\d{6})(?!\d)")  # a permalink's `p` path, or that path alone
 _DOTTED_TS = re.compile(r"(?<![\d.])\d{10}\.\d{6}(?!\d)")
 
 
 def slack_ts(text: str) -> list[str]:
-    """Every Slack ts `text` names, dotted: a permalink's `p` path, and any
-    `1234567890.123456`, which a reply's permalink holds as its `thread_ts=`."""
+    """Every Slack ts `text` names, dotted: a permalink's `p` path (or the path
+    alone, `p1234567890123456`), and any `1234567890.123456`, which a reply's
+    permalink holds as its `thread_ts=`."""
     found = [f"{a}.{b}" for a, b in _P_TS.findall(text)] + _DOTTED_TS.findall(text)
     return list(dict.fromkeys(found))
 
