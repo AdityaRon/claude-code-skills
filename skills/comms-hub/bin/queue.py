@@ -948,7 +948,9 @@ def remember(cfg: dict, emit, details: dict, me: str, route: list[dict], to_revi
             why = f"{pr['state'].lower()} before it was done"
         elif key.startswith("review:") and ((my_last_review(pr, me) or {}).get("commit") or {}).get("oid") == pr["headRefOid"]:
             why = "review posted at the head"
-        elif key.startswith("route:") and key not in route_keys:
+        elif key.startswith("route:") and key not in route_keys and todo_ref(r) in classified:
+            # Only a PR whose asks this scan read: one fetched for its state alone
+            # (a todo's extra ref) has no ROUTE rows, which says nothing.
             why = "answered on the PR"
         else:
             continue

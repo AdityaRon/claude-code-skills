@@ -92,7 +92,7 @@ Mutations (run.py --mutate applies each and expects this file to fail):
   parked-unsaid: queue.py: `emit(f"parked: {len(parked)}" + (` => `(lambda *a: None)(f"parked: {len(parked)}" + (`
   in-flight-unnamed: queue.py: `emit(f"  {r['id']}  {r['text']}  {r['ref']}")` => `pass`
   todo-never-closed: queue.py: `closed.append(hub.log_event(cfg, "done", why, ref=pr["url"], corrects=r["id"]))` => `pass`
-  route-todo-closed-early: queue.py: `elif key.startswith("route:") and key not in route_keys:` => `elif key.startswith("route:"):`
+  route-todo-closed-early: queue.py: `elif key.startswith("route:") and key not in route_keys and todo_ref(r) in classified:` => `elif key.startswith("route:") and todo_ref(r) in classified:`
   unregated-ignored: queue.py: `if f"unregated:{s['sent_id']}" not in keys:` => `if False:`
   unregated-twice: queue.py: `if f"unregated:{s['sent_id']}" not in keys:` => `if True:`
   unregated-corrected-ignored: queue.py: `if not (by_key.get(f"unregated:{s['sent_id']}") or {}).get("corrected")]` => `]`
@@ -118,6 +118,7 @@ Mutations (run.py --mutate applies each and expects this file to fail):
   prs-watched-unreviewed: queue.py: `and (r in inbound_refs or my_last_review(details[r], me)))` => `)`
   history-merge-missed: queue.py: `if p["ref"] not in now_refs and d and d.get("state") == "MERGED":` => `if False:`
   merge-unfetched: queue.py: `extra = {pr_ref(r["ref"]) for r in waiting} | todo_refs | listed` => `extra = {pr_ref(r["ref"]) for r in waiting} | todo_refs`
+  todo-unread-answered: queue.py: `key not in route_keys and todo_ref(r) in classified:` => `key not in route_keys:`
   history-review-missed: queue.py: `if p.get("my_sha") and (o.get("my_state"), o.get("my_sha")) != (p.get("my_state"), p.get("my_sha")):` => `if False:`
   watched-draft-listed: queue.py: `if pr["isDraft"]:` => `if False:`
   watched-reviewed-listed: queue.py: `if any(((r.get("commit") or {}).get("oid")) == head for r in mine) or` => `if False or`
@@ -705,6 +706,15 @@ class InFlight(unittest.TestCase):
         outs, rows, _, _ = scans(lambda i: fake(details={**DETAILS, 6: detail(6, state="MERGED")}), n=2, before=seed)
         self.assertEqual([(r["kind"], r["text"]) for r in rows if r["corrects"]], [("done", "merged before it was done")])
         self.assertNotIn("route bob's question", outs[1].split("== INBOUND")[0])
+
+    def test_an_open_pr_whose_asks_were_not_read_keeps_its_ask(self):
+        # #6 is fetched for its state, not classified: its ask missing from ROUTE says nothing.
+        def seed(cfg, state):
+            hub.log_event(cfg, "todo", "route bob's question", ref="https://github.com/acme/app/pull/6", who="bob",
+                          detail="key=route:acme/app#6:bob@20261012T100000")
+        outs, rows, _, _ = scans(lambda i: fake(details={**DETAILS, 6: detail(6)}), before=seed)
+        self.assertEqual([r for r in rows if r["kind"] == "done"], [])
+        self.assertIn(", 0 closed", outs[0])
 
     def test_github_closes_what_is_done(self):
         replied = detail(2, comments=[ev(ME, MINE_AT), ev(ME, "2026-10-21T09:00:00Z")],
