@@ -92,9 +92,19 @@ Mutations (run.py --mutate applies each and expects this file to fail):
   parked-unsaid: queue.py: `emit(f"parked: {len(parked)}" + (` => `(lambda *a: None)(f"parked: {len(parked)}" + (`
   in-flight-unnamed: queue.py: `emit(f"  {r['id']}  {r['text']}  {r['ref']}")` => `pass`
   todo-never-closed: queue.py: `closed.append(hub.log_event(cfg, "done", why, ref=pr["url"], corrects=r["id"]))` => `pass`
-  route-todo-closed-early: queue.py: `elif key.startswith("route:") and key not in route_keys:` => `elif key.startswith("route:"):`
+  route-todo-closed-early: queue.py: `elif key.startswith("route:") and key not in route_keys and todo_ref(r) in classified:` => `elif key.startswith("route:") and todo_ref(r) in classified:`
   unregated-ignored: queue.py: `if f"unregated:{s['sent_id']}" not in keys:` => `if False:`
   unregated-twice: queue.py: `if f"unregated:{s['sent_id']}" not in keys:` => `if True:`
+  unregated-corrected-ignored: queue.py: `if not (by_key.get(f"unregated:{s['sent_id']}") or {}).get("corrected")]` => `]`
+  unregated-row-unnamed: queue.py: `then record it on its row ({rows}): ` => `then record it: `
+  routed-merge-unchecked: queue.py: `if pr["state"] in ("MERGED", "CLOSED"):` => `if False:`
+  routed-unfetched: queue.py: `extra |= routed_refs` => `pass`
+  routed-unread-blocks: queue.py: `if ref in routed_only:` => `if False:`
+  routed-key-lost: queue.py: ` or pr_ref(todo_ref(first)) or pr_ref(first.get("ref") or "")` => ``
+  routed-answer-unchecked: queue.py: `elif key.startswith("route:") and key not in route_keys and ref in classified:` => `elif False:`
+  routed-answer-unread: queue.py: `and key not in route_keys and ref in classified:` => `and key not in route_keys:`
+  with-sessions-ids-always: queue.py: `if len(routed_) <= FEW_IDS else` => `if True else`
+  with-sessions-unsplit: queue.py: `for who, n, age in sessions:` => `for who, n, age in []:`
   regate-fail-unchecked: queue.py: `(hub.parse_time(s.get("regated_at")), hub.parse_time(s.get("claim_moved_at")))` => `(hub.parse_time(s.get("regated_at")),)`
   morning-gate-unchecked: queue.py: `checked = max([dt.datetime.fromtimestamp(s.get("passed_at") or 0, dt.timezone.utc)]` => `checked = max([dt.datetime.fromtimestamp(0, dt.timezone.utc)]`
   relook-never: queue.py: `elif sha and sha != pr["headRefOid"] and not r["text"].startswith("re-look"):` => `elif False:`
@@ -108,6 +118,7 @@ Mutations (run.py --mutate applies each and expects this file to fail):
   prs-watched-unreviewed: queue.py: `and (r in inbound_refs or my_last_review(details[r], me)))` => `)`
   history-merge-missed: queue.py: `if p["ref"] not in now_refs and d and d.get("state") == "MERGED":` => `if False:`
   merge-unfetched: queue.py: `extra = {pr_ref(r["ref"]) for r in waiting} | todo_refs | listed` => `extra = {pr_ref(r["ref"]) for r in waiting} | todo_refs`
+  todo-unread-answered: queue.py: `key not in route_keys and todo_ref(r) in classified:` => `key not in route_keys:`
   history-review-missed: queue.py: `if p.get("my_sha") and (o.get("my_state"), o.get("my_sha")) != (p.get("my_state"), p.get("my_sha")):` => `if False:`
   watched-draft-listed: queue.py: `if pr["isDraft"]:` => `if False:`
   watched-reviewed-listed: queue.py: `if any(((r.get("commit") or {}).get("oid")) == head for r in mine) or` => `if False or`
@@ -696,6 +707,15 @@ class InFlight(unittest.TestCase):
         self.assertEqual([(r["kind"], r["text"]) for r in rows if r["corrects"]], [("done", "merged before it was done")])
         self.assertNotIn("route bob's question", outs[1].split("== INBOUND")[0])
 
+    def test_an_open_pr_whose_asks_were_not_read_keeps_its_ask(self):
+        # #6 is fetched for its state, not classified: its ask missing from ROUTE says nothing.
+        def seed(cfg, state):
+            hub.log_event(cfg, "todo", "route bob's question", ref="https://github.com/acme/app/pull/6", who="bob",
+                          detail="key=route:acme/app#6:bob@20261012T100000")
+        outs, rows, _, _ = scans(lambda i: fake(details={**DETAILS, 6: detail(6)}), before=seed)
+        self.assertEqual([r for r in rows if r["kind"] == "done"], [])
+        self.assertIn(", 0 closed", outs[0])
+
     def test_github_closes_what_is_done(self):
         replied = detail(2, comments=[ev(ME, MINE_AT), ev(ME, "2026-10-21T09:00:00Z")],
                          reviews=[rv("bob", "APPROVED", AFTER, body="[question] safe on retry")])
@@ -705,6 +725,89 @@ class InFlight(unittest.TestCase):
         done = [r for r in rows if r["kind"] == "done"]
         self.assertEqual(sorted(r["text"] for r in done), ["answered on the PR", "review posted at the head"])
         self.assertIn("2 closed", outs[1])
+
+
+class RoutedRows(unittest.TestCase):
+    """A routed row left only by a `returned` row or by ageing out a week later:
+    130 stayed open, and the header named every id each tick."""
+
+    def route(self, n, ref=True):
+        """A ROUTE todo on #n, which the session routed to app-session with --corrects, without --ref unless `ref`."""
+        def seed(cfg, state):
+            todo = hub.log_event(cfg, "todo", "route bob's question", ref=f"https://github.com/acme/app/pull/{n}",
+                                 who="bob", detail=f"key=route:acme/app#{n}:bob@20261020T100000")
+            hub.log_event(cfg, "routed", "bob's question", ref=todo["ref"] if ref else "", who="app-session",
+                          corrects=todo["id"])
+        return seed
+
+    def test_a_merged_pr_closes_its_routed_row(self):
+        # #6 merged before merged_days, so no search returns it: only the routed row's PR reads it.
+        outs, rows, _, _ = scans(lambda i: fake(details={**DETAILS, 6: detail(6, state="MERGED")}), n=2,
+                                 before=self.route(6, ref=False))
+        self.assertEqual([(r["text"], r["who"], r["ref"], r["corrects"]) for r in rows if r["kind"] == "returned"],
+                         [("merged before the peer reported back", "app-session", "https://github.com/acme/app/pull/6",
+                           "1021.1")])
+        self.assertIn("with-sessions: 1 (1021.1)", outs[0])
+        self.assertIn(", 1 closed (1021.1)", outs[0])
+        self.assertIn("with-sessions: 0", outs[1].splitlines())
+
+    def test_an_open_prs_routed_ask_stays_until_answered_on_it(self):
+        ask = InFlight().ask()
+        replied = detail(2, comments=[ev(ME, MINE_AT), ev(ME, "2026-10-21T09:00:00Z")],
+                         reviews=[rv("bob", "APPROVED", AFTER, body="[question] safe on retry")])
+        states = [ask, ask, replied]
+
+        def gh(i):
+            if i == 1:  # the session routes the ask, without --ref
+                cfg = hub.load_config()
+                todo = next(r for r in q.open_rows(cfg, "todo") if r["text"].startswith("route"))
+                hub.log_event(cfg, "routed", "routed to app-session", who="app-session", corrects=todo["id"])
+            return fake(details={**DETAILS, 2: states[i]})
+        outs, rows, _, _ = scans(gh, n=3)
+        self.assertRegex(outs[1], r"\nwith-sessions: 1 \(\S+\): when a peer answers")
+        self.assertIn(", 0 closed", outs[1], "the ask is still on the PR")
+        self.assertEqual([(r["text"], r["ref"]) for r in rows if r["kind"] == "returned"],
+                         [("answered on the PR", "https://github.com/acme/app/pull/2")])
+
+    def test_an_open_pr_whose_asks_were_not_read_keeps_its_routed_row(self):
+        # #6 is fetched for its state, not classified: its ask missing from ROUTE says nothing.
+        outs, rows, _, _ = scans(lambda i: fake(details={**DETAILS, 6: detail(6)}), before=self.route(6))
+        self.assertEqual([r for r in rows if r["kind"] == "returned"], [])
+        self.assertIn(", 0 closed", outs[0])
+
+    def test_a_routed_rows_pr_that_cannot_be_read_leaves_it_open_and_blocks_nothing(self):
+        # Read for the row alone: UNKNOWN would block every scan until the row aged out.
+        outs, rows, _, _ = scans(lambda i: fake(details={**DETAILS, 8: Fail()}), before=self.route(8))
+        self.assertIn("routed-unread: acme/app#8: ", outs[0])
+        self.assertTrue(outs[0].endswith("\nOK"), outs[0][-300:])
+        self.assertEqual([r for r in rows if r["kind"] == "returned"], [])
+
+    def test_with_sessions_names_ids_while_few_then_counts_each_session(self):
+        def seed(n_app, n_web):
+            def seed(cfg, state):
+                with mock.patch.dict(os.environ, {"COMMS_HUB_NOW": "2026-10-18T17:00:00+00:00"}):
+                    hub.log_event(cfg, "routed", "the oldest", who="app-session")
+                for i in range(n_app - 1):
+                    hub.log_event(cfg, "routed", f"item {i}", who="app-session")
+                for i in range(n_web):
+                    hub.log_event(cfg, "routed", f"item {i}", who="web-session")
+            return seed
+
+        def lines(out):
+            ls = out.splitlines()
+            i = next(k for k, ln in enumerate(ls) if ln.startswith("with-sessions:"))
+            return ls[i:i + 3]
+        outs, _, _, _ = scans(lambda i: fake(), before=seed(90, 40))
+        self.assertEqual(lines(outs[0]), [
+            "with-sessions: 130 with 2 sessions: when one reports back, close its rows with its line below",
+            '  app-session: 90 open, oldest 3d: hub.py returned app-session LINK... | --all "WHY"',
+            '  web-session: 40 open, oldest 0m: hub.py returned web-session LINK... | --all "WHY"'])
+        outs, _, _, _ = scans(lambda i: fake(), before=seed(3, 2))
+        self.assertEqual(lines(outs[0]), [
+            "with-sessions: 5 (1018.1 1021.1 1021.2 1021.3 1021.4): when a peer answers, log --kind returned "
+            "--corrects ID",
+            '  app-session: 3 open, oldest 3d: hub.py returned app-session LINK... | --all "WHY"',
+            '  web-session: 2 open, oldest 0m: hub.py returned web-session LINK... | --all "WHY"'])
 
 
 class Parked(unittest.TestCase):
@@ -864,6 +967,31 @@ class Morning(unittest.TestCase):
                      {"passed_at": 1792602000 - 3600}, {"withdrawn_at": "2026-10-21T08:12:00-07:00"}):
             _, rows, _, _ = scans(lambda i: fake(), before=self.gate(**over))
             self.assertEqual([r for r in rows if r["kind"] == "blocked"], [], over)
+
+    def test_a_row_correcting_the_blocked_one_is_the_recheck(self):
+        # Read from the gate records alone, a post answered at 10:20 was listed again at 17:00.
+        def seed(cfg, state):
+            self.gate()(cfg, state)
+            s = json.loads((state / "gate" / "q.json").read_text())
+            (state / "gate" / "r.json").write_text(json.dumps({**s, "sent_id": "Q0010"}))
+
+        def gh(i):
+            if i == 1:
+                row = hub.keyed(hub.load_config())["unregated:Q0009"]
+                with contextlib.redirect_stdout(io.StringIO()):
+                    hub.main(["log", "--kind", "answered", "--corrects", row["id"], "re-checked, nothing moved"])
+            return fake()
+        outs, rows, _, _ = scans(gh, n=2, before=seed)
+        ids = {r["detail"].rsplit(":", 1)[1]: r["id"] for r in rows if r["kind"] == "blocked"}
+        self.assertIn(f"morning-unchecked: 2 (Q0009 Q0010): posted with no re-gate since the window opened; re-check "
+                      f"each claim now and tell the user what moved, then record it on its row (Q0009: {ids['Q0009']}, "
+                      f"Q0010: {ids['Q0010']}): hub.py log --kind answered --corrects ROW \"<what moved, or nothing>\"",
+                      outs[0])
+        self.assertIn(f"morning-unchecked: 1 (Q0010): posted with no re-gate since the window opened; re-check each "
+                      f"claim now and tell the user what moved, then record it on its row (Q0010: {ids['Q0010']})",
+                      outs[1], "the uncorrected one is still listed")
+        self.assertIn(f"needs-you: 1 ({ids['Q0010']})", outs[1])
+        self.assertEqual(len([r for r in rows if r["kind"] == "blocked"]), 2, "each logged once")
 
 
 class ReviewRows(unittest.TestCase):

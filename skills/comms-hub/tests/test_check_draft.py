@@ -6,6 +6,8 @@ Mutations (run.py --mutate applies each and expects this file to fail):
   scheduled-reply-refused: check_draft.py: `and not args.replies and stamp["send"] != "schedule":` => `and not args.replies:`
   regate-unmarked: check_draft.py: `regate_of = mark_regate(cfg, args.file, True)` => `regate_of = None`
   claim-move-unmarked: check_draft.py: `regate_of = mark_regate(cfg, args.file, False)` => `regate_of = None`
+  regate-after-post-unseen: check_draft.py: `if post and post <= hub.now():` => `if False:`
+  regate-row-unnamed: check_draft.py: `if row and not row.get("corrected") else ""` => `if False else ""`
   withdraw-logs-again: check_draft.py: `if not s.get("withdrawn_at"):` => `if True:`
   withdrawn-still-pending: hub.py: `or not s.get("sent_id") or s.get("withdrawn_at"):` => `or not s.get("sent_id"):`
   bad-context-is-text: check_draft.py: `text = context if not problem else` => `text = context if True else`
@@ -592,6 +594,32 @@ class Scheduled(unittest.TestCase):
             self.assertEqual(rc, 1)
             self.assertIn("claim moved on scheduled message Q0001", out)
             self.assertEqual(record()["claim_moved_at"], morning)
+
+    def test_a_recheck_after_post_at_says_it_posted_and_names_its_row(self):
+        # Re-gated at 10:00, a posted message read "send ... in the same turn", and a moved
+        # claim "withdraw it before post_at", which could no longer be done.
+        merged = {**PR_JSON, "state": "MERGED"}
+        later = "2026-10-22T17:00:00+00:00"  # 10:00 there, after the 08:30 post
+        with Env() as env:
+            gate(env, f"{LINK} is still awaiting review.\n", "--top-level", gh=fake(), now=EVENING)
+            gate(env, None, "--record-sent", "Q0001", now=EVENING)
+            copy = env.state / "sent" / "2026-10-21" / "Q0001.md"
+            with mock.patch.dict(os.environ, {"COMMS_HUB_NOW": later}):
+                row = hub.log_event(hub.load_config(), "blocked", "posted without the morning re-gate",
+                                    needs_user=True, detail="key=unregated:Q0001")
+            rc, out = gate_file(copy, "--top-level", gh=fake(), now=later)
+            self.assertEqual(rc, 0, out)
+            self.assertIn("PASS sha256=", out)
+            self.assertIn(": scheduled message Q0001 posted at 08:30, so there is nothing to send; its claims still "
+                          f"hold; record it on its row: hub.py log --kind answered --corrects {row['id']} "
+                          "\"re-checked, nothing moved\"\n", out)
+            self.assertNotIn("in the same turn", out)
+            rc, out = gate_file(copy, "--top-level", gh=fake(merged), now=later)
+            self.assertEqual(rc, 1)
+            self.assertIn("claim moved on scheduled message Q0001, which posted at 08:30: too late to withdraw it; "
+                          f"tell the user what moved; record it on its row: hub.py log --kind answered --corrects "
+                          f"{row['id']} \"<what moved>\"\n", out)
+            self.assertNotIn("before post_at", out)
 
 
 class Header(unittest.TestCase):

@@ -1,6 +1,11 @@
 r"""hub.py: standing reviews, the CI verdict, the gh runner, quiet hours, config, active hours.
 
 Mutations (run.py --mutate applies each and expects this file to fail):
+  returned-any-session: hub.py: `mine = [r for r in routed_ if (r.get("who") or "").strip().lower() == session.lower()]` => `mine = list(routed_)`
+  returned-began-unread: hub.py: ` | handles((r.get("began") or {}).get("ref") or "") for r in routed_}` => ` for r in routed_}`
+  returned-all-unchecked: hub.py: `problem = text_problem(why) if why else "--all needs WHY, the text the panel shows"` => `problem = ""`
+  folded-began-dropped: hub.py: `"began": old.get("began") or old}` => `}`
+  handles-pr-as-ticket: hub.py: `if pr_ref(text):  # one PR` => `if False:  # one PR`
   commented-revokes: hub.py: `if r.get("state") in ("COMMENTED", "PENDING"):` => `if r.get("state") in ("PENDING",):`
   first-review-wins: hub.py: `key=lambda r: r.get("submittedAt") or ""` => `key=lambda r: r.get("submittedAt") or "", reverse=True`
   cancelled-green: hub.py: `GREEN = ("SUCCESS", "NEUTRAL", "SKIPPED")` => `GREEN = ("SUCCESS", "NEUTRAL", "SKIPPED", "CANCELLED")`
@@ -527,6 +532,78 @@ class Routed(unittest.TestCase):
                     contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(hub.main(["owner", "chan-two", "1793900000.000100", "ops-session"]), 0)
             self.assertEqual(list(json.loads((env.state / "threads.json").read_text())), ["chan-two 1793900000.000100"])
+
+
+class Returned(unittest.TestCase):
+    """A peer reports back on what was routed to it: one `log --corrects` a row was
+    never done for 130 rows, which stayed open until they aged out."""
+
+    def seed(self, cfg):
+        a = hub.log_event(cfg, "routed", "carol's question", ref="https://github.com/acme/app/pull/2", who="app-session")
+        b = hub.log_event(cfg, "routed", "the same PR's conflicts", ref="acme/app#2", who="web-session")
+        c = hub.log_event(cfg, "routed", "the flaky test", ref="https://github.com/acme/app/pull/7", who="app-session")
+        # Routed with --corrects and no --ref: the link is the todo's.
+        todo = hub.log_event(cfg, "todo", "route bob's question", ref="https://github.com/acme/app/pull/6", who="bob",
+                             detail="key=route:acme/app#6:bob@20261020T100000")
+        hub.log_event(cfg, "routed", "bob's question", who="App-Session", corrects=todo["id"])
+        return a, b, c, todo
+
+    def returned(self, *argv):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = hub.main(["returned", *argv])
+        return rc, out.getvalue()
+
+    def open_(self, cfg):
+        return sorted(r["id"] for r in hub.open_items(cfg)[1])
+
+    def test_closes_the_named_sessions_rows_on_each_link_and_no_others(self):
+        with Env(now="2026-10-21T17:00:00Z"):
+            cfg = hub.load_config()
+            a, b, c, todo = self.seed(cfg)
+            rc, out = self.returned("app-session", "acme/app#2", "https://github.com/acme/app/pull/6")
+            self.assertEqual(rc, 0, out)
+            self.assertEqual(self.open_(cfg), [b["id"], c["id"]])
+            self.assertEqual(sorted((r["id"], r["kind"], r["who"], r["text"], r["ref"]) for r in hub.folded(cfg, 7)
+                                    if r["kind"] == "returned"),
+                             [(a["id"], "returned", "app-session", "carol's question", a["ref"]),
+                              (todo["id"], "returned", "App-Session", "bob's question", todo["ref"])])
+            self.assertIn(f"closed {a['id']}: carol's question (app #2)", out)
+            self.assertIn("returned: 2 of app-session's 3 closed, 1 still open", out)
+            # Only another session's row is on #2 now.
+            rc, out = self.returned("app-session", "acme/app#2")
+            self.assertEqual(rc, 1, out)
+            self.assertIn(f"returned: no open row of app-session's is on acme/app#2; open with web-session ({b['id']})",
+                          out)
+            self.assertEqual(self.open_(cfg), [b["id"], c["id"]])
+
+    def test_a_link_names_its_pr_ticket_or_thread(self):
+        self.assertEqual(hub.handles("https://github.com/acme/PROJ-12-service/pull/3/files"),
+                         {"acme/PROJ-12-service#3"}, "a repo named like a ticket is still one PR")
+        self.assertEqual(hub.handles("https://example.atlassian.net/browse/PROJ-12"), {"PROJ-12"})
+        self.assertEqual(hub.handles("https://example.slack.com/archives/C1/p1792600000000100"), {"1792600000.000100"})
+        self.assertEqual(hub.handles("notes on the deploy"), {"notes on the deploy"})
+
+    def test_all_closes_every_row_of_that_session_with_why_as_the_text(self):
+        with Env(now="2026-10-21T17:00:00Z"):
+            cfg = hub.load_config()
+            a, b, c, todo = self.seed(cfg)
+            for bad in (["app-session", "--all"], ["app-session", "--all", "see https://example.com"], ["--all", "x"]):
+                rc, out = self.returned(*bad)
+                self.assertEqual(rc, 2, (bad, out))
+            self.assertEqual(len(self.open_(cfg)), 4, "nothing closed")
+            rc, out = self.returned("web-session")
+            self.assertEqual(rc, 0, out)
+            self.assertIn(f"{b['id']}  0m  app #2  the same PR's conflicts", out)
+            self.assertIn("returned: 1 open with web-session: name each LINK, or --all \"WHY\"; nothing closed", out)
+            rc, out = self.returned("app-session", "--all", "the session finished its queue")
+            self.assertEqual(rc, 0, out)
+            self.assertEqual(self.open_(cfg), [b["id"]])
+            self.assertEqual({r["text"] for r in hub.folded(cfg, 7) if r["kind"] == "returned"},
+                             {"the session finished its queue"})
+            rc, out = self.returned("app-session", "--all", "again")
+            self.assertEqual(rc, 1, out)
+            self.assertIn("returned: nothing open with app-session; open: web-session 1; nothing closed", out)
 
 
 class TmpDir(unittest.TestCase):

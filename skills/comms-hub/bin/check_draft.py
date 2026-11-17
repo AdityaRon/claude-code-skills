@@ -393,7 +393,11 @@ def gate(args, cfg, gh) -> int:
         print(f"FAIL: {p}")
     if problems:
         regate_of = mark_regate(cfg, args.file, False)
-        if regate_of:
+        posted = posted_at(cfg, regate_of)
+        if regate_of and posted:
+            print(f"claim moved on scheduled message {regate_of}, which posted at {posted}: too late to withdraw it; "
+                  "tell the user what moved" + record_on_row(cfg, regate_of, "<what moved>"))
+        elif regate_of:
             print(f"claim moved on scheduled message {regate_of}: withdraw it before post_at, or tell the user")
         return 1
     if not known:
@@ -409,10 +413,33 @@ def gate(args, cfg, gh) -> int:
     if regate_of:
         stamp["regate_of"] = regate_of
     hub.write_whole(stamp_path(cfg, args.file), json.dumps(stamp, indent=1))
+    posted = posted_at(cfg, regate_of)
+    if posted:
+        print(f"PASS sha256={stamp['sha256'][:12]}: scheduled message {regate_of} posted at {posted}, so there is "
+              "nothing to send; its claims still hold" + record_on_row(cfg, regate_of, "re-checked, nothing moved"))
+        return 0
     print(f"PASS sha256={stamp['sha256'][:12]}: send "
           + ("the message after the header's `---`, not the header," if has_header else "this file")
           + " in the same turn, after --assert-fresh")
     return 0
+
+
+def posted_at(cfg, sent_id: str | None) -> str:
+    """When the scheduled message `sent_id` posted, as HH:MM; '' while still to post.
+    A re-gate after post_at said to send it, or to withdraw it before post_at."""
+    for p in sorted((hub.state_dir(cfg) / "gate").glob("*.json")) if sent_id else []:
+        s = json.loads(p.read_text())
+        post = hub.parse_time(s.get("post_at")) if s.get("sent_id") == sent_id and s.get("send") == "schedule" else None
+        if post and post <= hub.now():
+            return f"{post.astimezone(hub.zone(cfg)):%H:%M}"
+    return ""
+
+
+def record_on_row(cfg, sent_id: str, text: str) -> str:
+    """The command that records the re-check on the scan's row for a post that had none, if it is open."""
+    row = hub.keyed(cfg).get(f"unregated:{sent_id}")
+    return f"; record it on its row: hub.py log --kind answered --corrects {row['id']} \"{text}\"" \
+        if row and not row.get("corrected") else ""
 
 
 def mark_regate(cfg, path, ok: bool) -> str | None:
