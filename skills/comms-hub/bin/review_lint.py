@@ -118,6 +118,13 @@ def review_problems(r) -> list[str]:
     return out
 
 
+def kinds(r: dict) -> str:
+    """Each kind's count in KINDS order, `blocking:1,nit:2`, or `none`: the log
+    row keeps it, so a later round or a measurement reads more than a total."""
+    n = [(k, sum(f.get("kind") == k for f in r.get("findings") or [])) for k in KINDS]
+    return ",".join(f"{k}:{c}" for k, c in n if c) or "none"
+
+
 def verdict(r: dict) -> str:
     """approvable: nothing but nits, considers and preexisting; else the user reads it first."""
     if r.get("escalate") or any(f.get("kind") not in APPROVABLE for f in r.get("findings") or []):
@@ -148,7 +155,7 @@ def post(cfg: dict, gh: hub.Gh, owner: str, repo: str, n: int, r: dict) -> int:
     old = next((x for x in hub.open_items(cfg)[0] if x["kind"] == "reviewed" and same_pr(x["ref"], ref)), None)
     row = hub.log_event(cfg, "reviewed", verdict(r), ref=f"https://github.com/{owner}/{repo}/pull/{n}",
                         needs_user=True, corrects=old["id"] if old else "",
-                        detail=f"sha={r['head']} review={res.get('id')} findings={len(r.get('findings') or [])}")
+                        detail=f"sha={r['head']} review={res.get('id')} findings={len(r.get('findings') or [])} kinds={kinds(r)}")
     print(f"logged {row['id']}: reviewed {row['text']}")
     for t in hub.folded(cfg, hub.OPEN_DAYS):
         if t["kind"] == "todo" and re.search(rf"\bkey=review:{re.escape(ref)}@", t.get("detail") or ""):

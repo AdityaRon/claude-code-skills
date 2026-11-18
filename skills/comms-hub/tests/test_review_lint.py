@@ -23,13 +23,15 @@ Mutations (run.py --mutate applies each and expects this file to fail):
   preexisting-blocks: review_lint.py: `APPROVABLE = ("nit", "consider", "preexisting")` => `APPROVABLE = ("nit", "consider")`
   preexisting-unlabelled-ok: review_lint.py: `if pre > labels:` => `if False:`
   escalation-ignored: review_lint.py: `if r.get("escalate") or any(` => `if any(`
+  kinds-unlogged: review_lint.py: ` kinds={kinds(r)}")` => `")`
+  kinds-unordered: review_lint.py: `for k, c in n if c) or "none"` => `for k, c in sorted(n) if c) or "none"`
   post-unlogged: review_lint.py: `row = hub.log_event(cfg, "reviewed", verdict(r),` => `row = dict(id="x", text="", ref="", kind="reviewed") or hub.log_event(cfg, "reviewed", verdict(r),`
   todo-left-open: review_lint.py: `hub.log_event(cfg, "done", "review posted", ref=row["ref"], corrects=t["id"])` => `pass`
   rows-pile-up: review_lint.py: `corrects=old["id"] if old else "",` => `corrects="",`
   net-verdict-ok: review_lint.py: `if VERDICT.search(line):` => `if False:`
   net-any-case: review_lint.py: `VERDICT = re.compile(r"(?:^` => `VERDICT = re.compile(r"(?i)(?:^`
   net-double-colon: review_lint.py: `\s*:(?!:)")` => `\s*:")`
-  failed-post-logged: review_lint.py:`print(f"BLOCKED: the post failed, so nothing was logged and the review is still to do: {e}")
+  failed-post-logged: review_lint.py: `print(f"BLOCKED: the post failed, so nothing was logged and the review is still to do: {e}")
         return 3` => `res = {}`
 """
 import contextlib
@@ -189,6 +191,8 @@ class Post(unittest.TestCase):
             row, = logged(env)
             self.assertEqual((row["kind"], row["text"], row["needs_user"]), ("reviewed", "approvable", True))
             self.assertIn(f"sha={FULL}", row["detail"])
+            # Per kind, not only the total, in KINDS order, for the next round and a later measurement.
+            self.assertTrue(row["detail"].endswith(" findings=2 kinds=consider:1,nit:1"), row["detail"])
 
     def test_a_question_blocking_or_escalation_needs_the_users_read(self):
         for over in ({"findings": [{"kind": "nit"}, {"kind": "question"}]}, {"findings": [{"kind": "blocking"}]},
@@ -197,6 +201,8 @@ class Post(unittest.TestCase):
                 rc, out, _ = post(env, review(**over))
                 self.assertEqual(rc, 0, out)
                 self.assertEqual(logged(env)[0]["text"], "needs your read", over)
+                if over["findings"][:1] == [{"kind": "nit"}]:
+                    self.assertTrue(logged(env)[0]["detail"].endswith(" kinds=question:1,nit:1"), "severity order")
 
     def test_a_labelled_preexisting_finding_stays_approvable(self):
         # What the PR inherited is not the author's to fix here, so it never holds the approval.
@@ -258,6 +264,8 @@ class Post(unittest.TestCase):
                                  detail="key=review:acme/app#12@abcdef1")
             rc, out, _ = post(env, review(findings=[]))
             self.assertEqual(rc, 0, out)
+            row = next(r for r in logged(env) if r["kind"] == "reviewed" and r["corrects"] == first["id"])
+            self.assertTrue(row["detail"].endswith(" findings=0 kinds=none"), row)
             open_ = hub.open_items(cfg)[0]
             self.assertEqual([(r["id"], r["text"]) for r in open_], [(first["id"], "approvable")],
                              "one row per PR, now the re-look's verdict")
