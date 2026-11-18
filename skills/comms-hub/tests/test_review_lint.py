@@ -19,7 +19,9 @@ Mutations (run.py --mutate applies each and expects this file to fail):
   inline-dropped: review_lint.py: `for c in r.get("comments") or []]}` => `for c in []]}`
   inline-unlinted: review_lint.py: `for p in lint(c["body"], cap)]` => `for p in []]`
   short-sha-ok: review_lint.py: `if not re.fullmatch(r"[0-9a-f]{40}", str(r.get("head") or "")):` => `if False:`
-  question-approvable: review_lint.py: `any(f.get("kind") not in ("nit", "consider")` => `any(f.get("kind") == "blocking"`
+  question-approvable: review_lint.py: `any(f.get("kind") not in APPROVABLE` => `any(f.get("kind") == "blocking"`
+  preexisting-blocks: review_lint.py: `APPROVABLE = ("nit", "consider", "preexisting")` => `APPROVABLE = ("nit", "consider")`
+  preexisting-unlabelled-ok: review_lint.py: `if pre > labels:` => `if False:`
   escalation-ignored: review_lint.py: `if r.get("escalate") or any(` => `if any(`
   post-unlogged: review_lint.py: `row = hub.log_event(cfg, "reviewed", verdict(r),` => `row = dict(id="x", text="", ref="", kind="reviewed") or hub.log_event(cfg, "reviewed", verdict(r),`
   todo-left-open: review_lint.py: `hub.log_event(cfg, "done", "review posted", ref=row["ref"], corrects=t["id"])` => `pass`
@@ -195,6 +197,27 @@ class Post(unittest.TestCase):
                 rc, out, _ = post(env, review(**over))
                 self.assertEqual(rc, 0, out)
                 self.assertEqual(logged(env)[0]["text"], "needs your read", over)
+
+    def test_a_labelled_preexisting_finding_stays_approvable(self):
+        # What the PR inherited is not the author's to fix here, so it never holds the approval.
+        body = "The retry loop never backs off (src/a.py:3).\n\n1. **Pre-existing:** the cap was never set (src/a.py:9)."
+        comments = [{"path": "src/a.py", "line": 3, "body": "- Pre-existing**:** this sleep predates the PR."}]
+        with Env(now="2026-10-21T17:00:00+00:00") as env:
+            rc, out, sent = post(env, review(body=body, comments=comments,
+                                             findings=[{"kind": "nit"}, {"kind": "preexisting"}, {"kind": "preexisting"}]))
+            self.assertEqual((rc, len(sent)), (0, 1), out)
+            self.assertEqual(logged(env)[0]["text"], "approvable")
+
+    def test_a_preexisting_finding_without_its_label_posts_nothing(self):
+        with Env(now="2026-10-21T17:00:00+00:00") as env:
+            for body in ("The cap was never set (src/a.py:9).",
+                         "The cap was never set, which is Pre-existing: src/a.py:9.",
+                         "Pre-existing: the cap was never set (src/a.py:9)."):
+                two = body.startswith("Pre-existing") and 2
+                rc, out, sent = post(env, review(body=body, findings=[{"kind": "preexisting"}] * (two or 1)))
+                self.assertEqual((rc, sent), (1, []), out)
+                self.assertIn(f'{two or 1} preexisting finding(s) but {1 if two else 0} line(s) starting "Pre-existing:"', out)
+            self.assertEqual(logged(env), [])
 
     def test_nothing_posts_on_a_lint_or_live_failure(self):
         with Env(now="2026-10-21T17:00:00+00:00") as env:

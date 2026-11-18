@@ -205,8 +205,9 @@ whole context.
     "findings": [{"kind": "nit"}, {"kind": "question"}], "escalate": "<why the user must read it; leave out if nothing>"}
    ```
 
-   One `findings` entry per finding, its kind `nit`, `consider`, `question` or
-   `blocking`. The body and each comment at most the `review-cap:` characters
+   One `findings` entry per finding, its kind `nit`, `consider`, `question`,
+   `blocking`, or `preexisting` for what the PR inherited, its line starting
+   `Pre-existing:`. The body and each comment at most the `review-cap:` characters
    (3 of 9 bodies once ran over and were trimmed by hand), leaving out what
    another reviewer already raised (the transcript has every review and
    thread). For an INBOUND PR the diff is `gh pr diff N --repo owner/repo`.
@@ -222,8 +223,8 @@ whole context.
    lints the body and each comment, re-reads the head and the open state,
    posts through the reviews API with the inline comments, and logs the review
    under Needs you with its verdict (`logged <id>: reviewed <verdict>`):
-   approvable when every finding is a nit or a consider and nothing is
-   escalated, else needs your read. It closes the review's todo. Exit 1 is a
+   approvable when every finding is a nit, a consider or preexisting and
+   nothing is escalated, else needs your read. It closes the review's todo. Exit 1 is a
    refusal, and the output says whether the file or the PR is the problem: fix
    the file and run it again, but a moved head means review again, and a
    closed or draft PR means no review. Exit 3: nothing posted or logged, so the

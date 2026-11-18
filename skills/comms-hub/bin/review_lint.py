@@ -8,7 +8,7 @@
 REVIEW.json, which the reviewer writes:
   {"head": "<the 40-character sha it read>", "body": "...",
    "comments": [{"path": "src/a.py", "line": 3, "side": "RIGHT", "body": "..."}],
-   "findings": [{"kind": "nit|consider|question|blocking"}], "escalate": "<why, or absent>"}
+   "findings": [{"kind": "blocking|question|consider|nit|preexisting"}], "escalate": "<why, or absent>"}
 
 Shape: no em dash, no token-shaped string, no bullet under three words, the body
 at most github.review_max_chars characters; each inline comment too. Live: the
@@ -17,8 +17,10 @@ PR is open, not a draft, and its head is still the one the reviewer read
 so review again. --apply then posts through the reviews API, which a hand-typed
 `gh pr review --body-file` could not: it dropped the inline comments, and a
 piped lint once let three refused reviews go out. It logs the review under
-Needs you with its verdict: approvable when every finding is a nit or a
-consider, else needs your read. The scan turns that into a re-look when the
+Needs you with its verdict: approvable when every finding is a nit, a
+consider or preexisting, else needs your read. A preexisting finding is what
+the PR inherited: each needs a line of the body or a comment that starts
+"Pre-existing:", so the author sees it is not theirs to fix here. The scan turns that into a re-look when the
 head moves, and closes it when the user approves or it merges.
 A review from this session is a COMMENT and nothing else: it never approves or
 requests changes, nor closes on a "Net:" verdict, since approval is the human's.
@@ -85,7 +87,11 @@ def live(gh: hub.Gh, owner: str, repo: str, n: int, head: str) -> tuple[list[str
     return out, True
 
 
-KINDS = ("nit", "consider", "question", "blocking")
+KINDS = ("blocking", "question", "consider", "nit", "preexisting")
+# What never holds the approval: trivia, a suggestion, what the PR inherited.
+APPROVABLE = ("nit", "consider", "preexisting")
+# The label an inherited finding starts with, after a list marker or bold.
+PRE = re.compile(r"^[ \t>*_+-]*(?:\d+[.)][ \t]*)?[*_]*Pre-existing[*_]*:", re.M)
 
 
 def review_problems(r) -> list[str]:
@@ -103,12 +109,18 @@ def review_problems(r) -> list[str]:
     for i, f in enumerate(r.get("findings") or [], 1):
         if not isinstance(f, dict) or f.get("kind") not in KINDS:
             out.append(f"finding {i} needs a kind, one of {', '.join(KINDS)}")
+    pre = sum(isinstance(f, dict) and f.get("kind") == "preexisting" for f in r.get("findings") or [])
+    texts = [r.get("body")] + [c.get("body") for c in r.get("comments") or [] if isinstance(c, dict)]
+    labels = sum(len(PRE.findall(t)) for t in texts if isinstance(t, str))
+    if pre > labels:
+        out.append(f'{pre} preexisting finding(s) but {labels} line(s) starting "Pre-existing:": '
+                   "start each inherited finding with it")
     return out
 
 
 def verdict(r: dict) -> str:
-    """approvable: nothing but nits and considers; else the user reads it first."""
-    if r.get("escalate") or any(f.get("kind") not in ("nit", "consider") for f in r.get("findings") or []):
+    """approvable: nothing but nits, considers and preexisting; else the user reads it first."""
+    if r.get("escalate") or any(f.get("kind") not in APPROVABLE for f in r.get("findings") or []):
         return "needs your read"
     return "approvable"
 
