@@ -46,8 +46,9 @@ anything that is not a pure permutation of the existing lines. Keep that split.
 
 **1. Establish there is pressure.** `--status` prints lines, bytes, both limits
 and `pressure: yes|no`, judged as memory-lint and session-start judge it (180
-lines or 20,000 bytes). On `pressure: no`, stop: say so with the numbers and
-change nothing.
+lines or 20,000 bytes). On `pressure: no`, say so with the numbers. Unless the
+user asked to clean up or archive the index, stop there and change nothing; a
+request goes on, with the numbers in front of the user.
 
 ```bash
 bash ~/.claude/memory-index.sh --store <slug> --status
@@ -111,8 +112,7 @@ A human approves; `memory-index.sh` writes.
 ## The aggressive tier: only when asked for it
 
 Steps 1 to 6 are the default and usually enough. Only when the user asks for
-more, and step 1 said `pressure: yes`, a line may also move with **evidence
-per line**:
+more, a line may also move with **evidence per line**:
 
 - **Finished work**: the tracker or GitHub state was checked, not inferred
   from the hook. `bash ~/.claude/memory-verify.sh --jira-keys` prints the keys
