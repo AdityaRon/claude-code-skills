@@ -20,7 +20,8 @@ and a header row starting `id` are skipped. In a glob `*` and `?` stop at `/`,
 `**` crosses it, and a glob with no `/` matches at any depth. The diff regex
 is printed with its row for the reviewer to apply. No file, no section: one
 small query finds that out.
-Exit 0, or 3 when the PR, or a checklist it has, could not be read in full.
+Exit 0, or 3 when the PR, or its checklist or whether it has one, could not
+be read in full.
 """
 from __future__ import annotations
 
@@ -66,11 +67,14 @@ def glob(g: str) -> re.Pattern:
 
 def checklist(gh: hub.Gh, owner: str, name: str, pr: dict) -> list[str]:
     """The Checklist section: the base's rows whose glob matches a changed file,
-    or nothing when the base has no checklist. Raises GhError when it has one
-    that cannot be read or matched in full."""
+    or nothing when the base has no checklist. Raises GhError when the lookup
+    fails, or the checklist cannot be read or matched in full."""
     base = pr["baseRefName"]
     at = f"refs/heads/{base}:{CHECKLIST}"
-    blob = gh.graphql(CHECKLIST_QUERY, owner=owner, name=name, at=at)["repository"]["object"]
+    try:
+        blob = gh.graphql(CHECKLIST_QUERY, owner=owner, name=name, at=at)["repository"]["object"]
+    except hub.GhError as e:
+        raise hub.GhError(f"whether {CHECKLIST} is on {base} is unknown: {e}")
     if blob is None:
         return []
     if blob.get("text") is None or blob.get("isTruncated"):
@@ -156,7 +160,7 @@ def main(argv=None, gh=None) -> int:
     try:
         checks = checklist(gh, owner, name, pr)
     except hub.GhError as e:
-        print(f"BLOCKED: {args.pr} has a review checklist that could not be read in full: {e}")
+        print(f"BLOCKED: {args.pr} review checklist: {e}")
         return 3
     text = render(args.pr, pr, int(cfg["github"]["review_max_chars"]), checks)
     if args.out:

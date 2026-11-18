@@ -23,6 +23,7 @@ Mutations (run.py --mutate applies each and expects this file to fail):
   preexisting-blocks: review_lint.py: `APPROVABLE = ("nit", "consider", "preexisting")` => `APPROVABLE = ("nit", "consider")`
   preexisting-unlabelled-ok: review_lint.py: `if pre > labels:` => `if False:`
   escalation-ignored: review_lint.py: `if r.get("escalate") or any(` => `if any(`
+  evidence-always-asked: review_lint.py: `if not asks:` => `if False:`
   evidence-unchecked: review_lint.py: `more, known = evidence(gh, owner, repo, n, r)` => `more = []`
   evidence-optional: review_lint.py: `elif f["kind"] in NEEDS_EVIDENCE and not cited(f):` => `elif False:`
   evidence-nit-required: review_lint.py: `NEEDS_EVIDENCE = ("blocking", "question")` => `NEEDS_EVIDENCE = KINDS`

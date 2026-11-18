@@ -14,6 +14,7 @@ Mutations (run.py --mutate applies each and expects this file to fail):
   checklist-anchored-basename: pr_transcript.py: `out, i = "" if "/" in g else "(?:.*/)?", 0` => `out, i = "", 0`
   checklist-partial-ok: pr_transcript.py: `if pr["files"]["pageInfo"].get("hasNextPage"):` => `if False:`
   checklist-unreadable-silent: pr_transcript.py: `bad.append(str(n))` => `pass`
+  checklist-lookup-failure-ok: pr_transcript.py: `raise hub.GhError(f"whether {CHECKLIST} is on {base} is unknown: {e}")` => `return []`
   checklist-truncated-ok: pr_transcript.py: `if blob.get("text") is None or blob.get("isTruncated"):` => `if blob.get("text") is None:`
 """
 import contextlib
@@ -63,7 +64,8 @@ def checklists(files):
 
 
 def run(env, handler, *argv, checklist=None):
-    runner = FakeGh(graphql={"CommsTranscript": handler, "ReviewChecklist": checklists(checklist or {})})
+    lookup = checklist if isinstance(checklist, list) else checklists(checklist or {})
+    runner = FakeGh(graphql={"CommsTranscript": handler, "ReviewChecklist": lookup})
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
         rc = pt.main(["acme/app#7", *argv], gh=hub.Gh(runner=runner, pause=0))
@@ -133,10 +135,14 @@ class Transcript(unittest.TestCase):
                                   (pr(), {BASE: {"text": None, "isTruncated": False}}, "binary or too large")):
                 rc, out = run(env, {"repository": {"pullRequest": p}}, checklist=lists)
                 self.assertEqual(rc, 3, out)
-                self.assertIn(f"BLOCKED: acme/app#7 has a review checklist that could not be read in full", out)
+                self.assertIn(f"BLOCKED: acme/app#7 review checklist: ", out)
                 self.assertIn(why, out)
             rc, out = run(env, {"repository": {"pullRequest": pr(more_files=True)}})
             self.assertEqual(rc, 0, "a long file list matters only to a checklist")
+            # A lookup that failed says nothing about whether there is a checklist, so the transcript is not complete.
+            rc, out = run(env, {"repository": {"pullRequest": pr()}}, checklist=[Fail(), Fail()])
+            self.assertEqual(rc, 3, out)
+            self.assertIn("BLOCKED: acme/app#7 review checklist: whether .claude/review-checklist.tsv is on main is unknown", out)
 
     def test_more_than_one_page_or_an_unreadable_pr_blocks(self):
         with Env() as env:
