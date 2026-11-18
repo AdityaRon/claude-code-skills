@@ -10,7 +10,7 @@ Mutations that must turn this file red:
                     break` => `                if False:
                     break`
   second-opener-read: heredocs.py: `w = None if self.bt or found or` => `w = None if self.bt or`
-  open-quote-at-opener-passes: heredocs.py: `        if found and (self.q or self.cont):` => `        if found and self.cont:`
+  open-quote-at-opener-passes: heredocs.py: `if found and (self.q or self.cont or` => `if found and (self.cont or`
   terminator-lenient: heredocs.py: `t = s.lstrip("\\t") if dash else s` => `t = s.strip()`
   dash-ignored: heredocs.py: `t = s.lstrip("\\t") if dash else s` => `t = s`
   insub-paren-passes: heredocs.py: `if self.insub and (t == term + ")" or self.body(s)):` => `if self.insub and t == term + ")":`

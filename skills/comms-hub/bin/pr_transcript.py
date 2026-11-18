@@ -11,23 +11,91 @@ review_lint.py --head. The second is `review-cap:`, the body's character limit
 the lint holds it to: 3 of 9 reviewers wrote past it on one day, each trimmed
 by hand once the lint refused it. A PR with more than one page of comments,
 reviews or threads is refused: a partial transcript reads as complete.
-Exit 0, or 3 when the PR could not be read in full.
+
+Opt-in: when the PR's base branch holds .claude/review-checklist.tsv (read
+from the base on GitHub, never the head, which the PR's author controls), a
+Checklist section lists its rows whose path glob matches a changed file. Tab
+separated: id, path glob, diff regex (may be empty), check, incident; `#` lines
+and a header row starting `id` are skipped. In a glob `*` and `?` stop at `/`,
+`**` crosses it, and a glob with no `/` matches at any depth. The diff regex
+is printed with its row for the reviewer to apply. No file, no section: one
+small query finds that out. A lookup that fails is one `checklist: could not
+read` line, not a block: an opt-in check never stops a repo that did not opt in.
+Exit 0, or 3 when the PR, or a checklist its base has, could not be read in full.
 """
 from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import hub  # noqa: E402
 
 TRANSCRIPT = """query CommsTranscript($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){
- pullRequest(number:$number){number url title state isDraft headRefOid createdAt body author{login}
+ pullRequest(number:$number){number url title state isDraft headRefOid baseRefName createdAt body author{login}
+  """ + hub.PR_FILES + """
   comments(first:100){pageInfo{hasNextPage} nodes{author{login} createdAt body}}
   reviews(first:100){pageInfo{hasNextPage} nodes{author{login} state submittedAt body commit{oid}}}
   reviewThreads(first:100){pageInfo{hasNextPage} nodes{isResolved path line
    comments(first:50){pageInfo{hasNextPage} nodes{author{login} createdAt body}}}}}}}"""
+
+
+CHECKLIST = ".claude/review-checklist.tsv"
+CHECKLIST_QUERY = """query ReviewChecklist($owner:String!,$name:String!,$at:String!){repository(owner:$owner,name:$name){
+ object(expression:$at){... on Blob{text isTruncated}}}}"""
+
+
+def glob(g: str) -> re.Pattern:
+    """A checklist path glob: `*` and `?` stop at `/`, `**` crosses it, no `/` matches at any depth."""
+    g = g.lstrip("/")
+    out, i = "" if "/" in g else "(?:.*/)?", 0
+    while i < len(g):
+        if g.startswith("**/", i):
+            out, i = out + "(?:.*/)?", i + 3
+        elif g.startswith("**", i):
+            out, i = out + ".*", i + 2
+        elif g[i] == "*":
+            out, i = out + "[^/]*", i + 1
+        elif g[i] == "?":
+            out, i = out + "[^/]", i + 1
+        else:
+            out, i = out + re.escape(g[i]), i + 1
+    return re.compile(out)
+
+
+def checklist(gh: hub.Gh, owner: str, name: str, pr: dict) -> list[str]:
+    """The Checklist section: the base's rows whose glob matches a changed file,
+    nothing when the base has no checklist, and one line when the lookup fails.
+    Raises GhError when a checklist is there and cannot be read or matched in full."""
+    base = pr["baseRefName"]
+    at = f"refs/heads/{base}:{CHECKLIST}"
+    try:
+        blob = gh.graphql(CHECKLIST_QUERY, owner=owner, name=name, at=at)["repository"]["object"]
+    except hub.GhError as e:
+        return [f"checklist: could not read {CHECKLIST} from {base} ({e})", ""]
+    if blob is None:
+        return []
+    if blob.get("text") is None or blob.get("isTruncated"):
+        raise hub.GhError(f"{CHECKLIST} on {base} is binary or too large to read")
+    if pr["files"]["pageInfo"].get("hasNextPage"):
+        raise hub.GhError(f"more than 100 changed files, so {CHECKLIST} cannot be matched against them all")
+    paths = [f["path"] for f in pr["files"]["nodes"]]
+    rows, bad = [], []
+    for n, line in enumerate(blob["text"].splitlines(), 1):
+        cells = [c.strip() for c in line.split("\t")] + [""] * 4
+        if not line.strip() or line.lstrip().startswith("#") or cells[0].lower() == "id":
+            continue
+        if not (cells[1] and cells[3]):
+            bad.append(str(n))
+            continue
+        rows.append(cells[:5])
+    hit = [r for r in rows if any(glob(r[1]).fullmatch(p) for p in paths)]
+    top = (f"checklist: {len(hit)} of {len(rows)} rows of {CHECKLIST} on {base} match the changed files; check each"
+           + (f". Unreadable line(s) {', '.join(bad)}: id, path glob, diff regex, check, incident, by tabs" if bad else ""))
+    return ["## Checklist", top] + [f"- {i} `{g}`" + (f" (diff `{rx}`)" if rx else "") + f": {check}"
+                                     + (f" Incident: {inc}" if inc else "") for i, g, rx, check, inc in hit] + [""]
 
 
 def partial(pr: dict) -> str | None:
@@ -41,14 +109,14 @@ def partial(pr: dict) -> str | None:
     return None
 
 
-def render(ref: str, pr: dict, cap: int) -> str:
+def render(ref: str, pr: dict, cap: int, checks: list[str] = ()) -> str:
     who = lambda x: hub.login(x.get("author")) or "a deleted account"  # noqa: E731
     lines = [f"head: {pr['headRefOid']}",
              f"review-cap: {cap} characters for the review's body (github.review_max_chars); the lint refuses more",
              f"# {ref}: {pr['title']}",
              f"{pr['url']} {pr['state']}{' draft' if pr.get('isDraft') else ''} by {who(pr)} opened {pr['createdAt']}",
              "", "## Description", (pr.get("body") or "").strip() or "(no description)", "",
-             "## Conversation, oldest first"]
+             *checks, "## Conversation, oldest first"]
     events = [(c["createdAt"], f"{who(c)} comment", c.get("body")) for c in pr["comments"]["nodes"]]
     for r in pr["reviews"]["nodes"]:
         if r.get("state") == "PENDING":
@@ -76,8 +144,9 @@ def main(argv=None, gh=None) -> int:
     except (hub.ConfigError, ValueError) as e:
         print(f"config: {e}")
         return 2
+    gh = gh or hub.Gh()
     try:
-        pr = (gh or hub.Gh()).graphql(TRANSCRIPT, owner=owner, name=name, number=number)["repository"]["pullRequest"]
+        pr = gh.graphql(TRANSCRIPT, owner=owner, name=name, number=number)["repository"]["pullRequest"]
     except hub.GhError as e:
         print(f"BLOCKED: {args.pr} could not be read: {e}")
         return 3
@@ -88,11 +157,18 @@ def main(argv=None, gh=None) -> int:
     if more:
         print(f"BLOCKED: {args.pr} has more than one page of {more}; a partial transcript reads as complete")
         return 3
-    text = render(args.pr, pr, int(cfg["github"]["review_max_chars"]))
+    try:
+        checks = checklist(gh, owner, name, pr)
+    except hub.GhError as e:
+        print(f"BLOCKED: {args.pr} review checklist: {e}")
+        return 3
+    text = render(args.pr, pr, int(cfg["github"]["review_max_chars"]), checks)
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:
             f.write(text)
         print("\n".join(text.splitlines()[:2]))
+        if checks[:1] and checks[0].startswith("checklist: could not read"):
+            print(checks[0])
         print(f"{len(text.splitlines())} lines -> {args.out}")
     else:
         sys.stdout.write(text)

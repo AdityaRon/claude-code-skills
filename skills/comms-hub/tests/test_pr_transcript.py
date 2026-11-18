@@ -8,6 +8,16 @@ Mutations (run.py --mutate applies each and expects this file to fail):
   no-head-line: pr_transcript.py: `lines = [f"head: {pr['headRefOid']}",` => `lines = [`
   no-cap-line: pr_transcript.py: `f"review-cap: {cap} characters for the review's body (github.review_max_chars); the lint refuses more",` => ``
   cap-not-printed: pr_transcript.py: `print("\n".join(text.splitlines()[:2]))` => `print(text.splitlines()[0])`
+  checklist-from-head: pr_transcript.py: `at = f"refs/heads/{base}:{CHECKLIST}"` => `at = f"{pr['headRefOid']}:{CHECKLIST}"`
+  checklist-all-rows: pr_transcript.py: `hit = [r for r in rows if any(glob(r[1]).fullmatch(p) for p in paths)]` => `hit = rows`
+  checklist-star-crosses-dirs: pr_transcript.py: `out, i = out + "[^/]*", i + 1` => `out, i = out + ".*", i + 1`
+  checklist-anchored-basename: pr_transcript.py: `out, i = "" if "/" in g else "(?:.*/)?", 0` => `out, i = "", 0`
+  checklist-partial-ok: pr_transcript.py: `if pr["files"]["pageInfo"].get("hasNextPage"):` => `if False:`
+  checklist-unreadable-silent: pr_transcript.py: `bad.append(str(n))` => `pass`
+  checklist-lookup-blocks: pr_transcript.py: `return [f"checklist: could not read {CHECKLIST} from {base} ({e})", ""]` => `raise`
+  checklist-lookup-silent: pr_transcript.py: `return [f"checklist: could not read {CHECKLIST} from {base} ({e})", ""]` => `return []`
+  checklist-lookup-unprinted: pr_transcript.py: `print(checks[0])` => `pass`
+  checklist-truncated-ok: pr_transcript.py: `if blob.get("text") is None or blob.get("isTruncated"):` => `if blob.get("text") is None:`
 """
 import contextlib
 import io
@@ -21,9 +31,10 @@ import pr_transcript as pt
 T1, T2, T3, T4 = "2026-10-20T10:00:00Z", "2026-10-20T11:00:00Z", "2026-10-20T12:00:00Z", "2026-10-20T13:00:00Z"
 
 
-def pr(more=None, more_thread=False):
+def pr(more=None, more_thread=False, files=("src/retry/loop.py", "docs/retry.md"), more_files=False):
     return {"number": 7, "url": "https://github.com/acme/app/pull/7", "title": "retry with backoff", "state": "OPEN",
-            "isDraft": False, "headRefOid": "abcdef1234567890", "createdAt": T1, "body": "Adds backoff.",
+            "isDraft": False, "headRefOid": "abcdef1234567890", "baseRefName": "main", "createdAt": T1,
+            "body": "Adds backoff.", "files": page([{"path": f} for f in files], more=more_files),
             "author": actor("teammate"),
             "comments": page([{"author": actor("bob"), "createdAt": T4, "body": "ping"}], more=more == "comments"),
             "reviews": page([{"author": actor("carol"), "state": "APPROVED", "submittedAt": T2, "body": "",
@@ -34,11 +45,33 @@ def pr(more=None, more_thread=False):
                 more=more == "reviewThreads")}
 
 
-def run(env, handler, *argv):
-    gh = hub.Gh(runner=FakeGh(graphql={"CommsTranscript": handler}), pause=0)
+BASE = "refs/heads/main:.claude/review-checklist.tsv"
+TSV = ("id\tpath glob\tdiff regex\tcheck\tincident\n"
+       "# rows a reviewer checks when the PR touches their paths\n"
+       "retry-cap\tsrc/**/*.py\tretry|backoff\tEvery retry loop caps its attempts.\tA retry storm, 2026-03\n"
+       "\n"
+       "docs-only\t*.md\t\tThe page's examples still run.\t\n"
+       "top-level\tsrc/*.py\t\tA top-level module keeps its public names.\tA rename broke importers\n"
+       "schema\tdb/**\t\tA migration has its down step.\tA rollback that could not\n"
+       "half a row\n")
+
+
+def checklists(files):
+    """Answers ReviewChecklist as GitHub would: the blob at the expression asked
+    for, from `files` (expression to text), null for a path not there."""
+    def answer(v):
+        text = files.get(v["at"])
+        return {"repository": {"object": text if not isinstance(text, str) else {"text": text, "isTruncated": False}}}
+    return answer
+
+
+def run(env, handler, *argv, checklist=None):
+    lookup = checklist if isinstance(checklist, list) else checklists(checklist or {})
+    runner = FakeGh(graphql={"CommsTranscript": handler, "ReviewChecklist": lookup})
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
-        rc = pt.main(["acme/app#7", *argv], gh=gh)
+        rc = pt.main(["acme/app#7", *argv], gh=hub.Gh(runner=runner, pause=0))
+    run.runner = runner
     return rc, out.getvalue()
 
 
@@ -58,6 +91,8 @@ class Transcript(unittest.TestCase):
                                  f"### {T3} teammate inline src/a.py:3 reply", f"### {T4} bob comment"])
         self.assertEqual(lines[lines.index(heads[1]) + 1], "(no body)")
         self.assertEqual(lines[lines.index(heads[0]) + 1], "off by one?")
+        self.assertNotIn("## Checklist", out, "no checklist on the base, no section")
+        self.assertEqual(run.runner.count("ReviewChecklist"), 1, "one small query finds that out")
 
     def test_writes_a_file_and_prints_the_head(self):
         with Env() as env:
@@ -66,6 +101,63 @@ class Transcript(unittest.TestCase):
             self.assertEqual(out.splitlines()[0], "head: abcdef1234567890")
             self.assertTrue(out.splitlines()[1].startswith("review-cap: 2500 characters"), out)
             self.assertIn("### ", (env.dir / "pr-7.md").read_text())
+
+    def test_the_checklist_lists_the_base_rows_whose_glob_matches_a_changed_file(self):
+        # A checklist on the head is the PR author's to edit: dropping a row there must not drop the check.
+        head = "abcdef1234567890:.claude/review-checklist.tsv"
+        planted = "harmless\t**\t\tNothing to check here.\t\n"
+        with Env() as env:
+            rc, out = run(env, {"repository": {"pullRequest": pr()}}, checklist={BASE: TSV, head: planted})
+        self.assertEqual(rc, 0, out)
+        lines = out.splitlines()
+        sec = lines[lines.index("## Checklist"):lines.index("## Conversation, oldest first")]
+        self.assertEqual(sec, [
+            "## Checklist",
+            "checklist: 2 of 4 rows of .claude/review-checklist.tsv on main match the changed files; check each. "
+            "Unreadable line(s) 8: id, path glob, diff regex, check, incident, by tabs",
+            "- retry-cap `src/**/*.py` (diff `retry|backoff`): Every retry loop caps its attempts. "
+            "Incident: A retry storm, 2026-03",
+            "- docs-only `*.md`: The page's examples still run.",
+            ""])
+        self.assertEqual(lines[:2][0], "head: abcdef1234567890", "head: and review-cap: stay the first two lines")
+        self.assertLess(lines.index("## Description"), lines.index("## Checklist"))
+
+    def test_a_top_level_glob_stays_at_the_top(self):
+        with Env() as env:
+            rc, out = run(env, {"repository": {"pullRequest": pr(files=("src/b.py",))}}, checklist={BASE: TSV})
+        self.assertEqual(rc, 0, out)
+        self.assertIn("checklist: 2 of 4 rows", out)
+        self.assertIn("- top-level `src/*.py`: A top-level module keeps its public names.", out)
+        self.assertNotIn("docs-only", out)
+
+    def test_a_checklist_that_cannot_be_read_or_matched_in_full_blocks(self):
+        with Env() as env:
+            for p, lists, why in ((pr(more_files=True), {BASE: TSV}, "more than 100 changed files"),
+                                  (pr(), {BASE: {"text": TSV[:40], "isTruncated": True}}, "binary or too large"),
+                                  (pr(), {BASE: {"text": None, "isTruncated": False}}, "binary or too large")):
+                rc, out = run(env, {"repository": {"pullRequest": p}}, checklist=lists)
+                self.assertEqual(rc, 3, out)
+                self.assertIn(f"BLOCKED: acme/app#7 review checklist: ", out)
+                self.assertIn(why, out)
+            rc, out = run(env, {"repository": {"pullRequest": pr(more_files=True)}})
+            self.assertEqual(rc, 0, "a long file list matters only to a checklist")
+
+    def test_a_failed_lookup_is_one_line_not_a_block(self):
+        # Opt-in: a repo that never added a checklist must not lose its transcript to the lookup.
+        with Env() as env:
+            rc, out = run(env, {"repository": {"pullRequest": pr()}}, checklist=[Fail(), Fail()])
+            self.assertEqual(rc, 0, out)
+            lines = out.splitlines()
+            line = next(l for l in lines if l.startswith("checklist:"))
+            self.assertTrue(line.startswith("checklist: could not read .claude/review-checklist.tsv from main (gh api"), line)
+            self.assertLess(lines.index("## Description"), lines.index(line))
+            self.assertLess(lines.index(line), lines.index("## Conversation, oldest first"))
+            self.assertNotIn("BLOCKED", out)
+            rc, out = run(env, {"repository": {"pullRequest": pr()}}, "-o", str(env.dir / "pr-7.md"),
+                          checklist=[Fail(), Fail()])
+            self.assertEqual(rc, 0, out)
+            self.assertTrue(out.splitlines()[2].startswith("checklist: could not read"), "the caller sees it too")
+            self.assertIn("checklist: could not read", (env.dir / "pr-7.md").read_text())
 
     def test_more_than_one_page_or_an_unreadable_pr_blocks(self):
         with Env() as env:

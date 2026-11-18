@@ -8,7 +8,8 @@
 REVIEW.json, which the reviewer writes:
   {"head": "<the 40-character sha it read>", "body": "...",
    "comments": [{"path": "src/a.py", "line": 3, "side": "RIGHT", "body": "..."}],
-   "findings": [{"kind": "nit|consider|question|blocking"}], "escalate": "<why, or absent>"}
+   "findings": [{"kind": "blocking|question|consider|nit|preexisting",
+                 "evidence": {"path": "src/a.py", "line": 3}}], "escalate": "<why, or absent>"}
 
 Shape: no em dash, no token-shaped string, no bullet under three words, the body
 at most github.review_max_chars characters; each inline comment too. Live: the
@@ -17,8 +18,13 @@ PR is open, not a draft, and its head is still the one the reviewer read
 so review again. --apply then posts through the reviews API, which a hand-typed
 `gh pr review --body-file` could not: it dropped the inline comments, and a
 piped lint once let three refused reviews go out. It logs the review under
-Needs you with its verdict: approvable when every finding is a nit or a
-consider, else needs your read. The scan turns that into a re-look when the
+Needs you with its verdict: approvable when every finding is a nit, a
+consider or preexisting, else needs your read. A preexisting finding is what
+the PR inherited: each needs a line of the body or a comment that starts
+"Pre-existing:", so the author sees it is not theirs to fix here. A
+blocking or question finding carries evidence, the changed file and line at the
+head it rests on; one query checks each path is among the PR's files and each
+line inside that file. Elsewhere evidence is optional and unchecked. The scan turns that into a re-look when the
 head moves, and closes it when the user approves or it merges.
 A review from this session is a COMMENT and nothing else: it never approves or
 requests changes, nor closes on a "Net:" verdict, since approval is the human's.
@@ -85,7 +91,13 @@ def live(gh: hub.Gh, owner: str, repo: str, n: int, head: str) -> tuple[list[str
     return out, True
 
 
-KINDS = ("nit", "consider", "question", "blocking")
+KINDS = ("blocking", "question", "consider", "nit", "preexisting")
+# What never holds the approval: trivia, a suggestion, what the PR inherited.
+APPROVABLE = ("nit", "consider", "preexisting")
+# The label an inherited finding starts with, after a list marker or bold.
+PRE = re.compile(r"^[ \t>*_+-]*(?:\d+[.)][ \t]*)?[*_]*Pre-existing[*_]*:", re.M)
+# What holds the approval names where it can be checked: a file and line at the head.
+NEEDS_EVIDENCE = ("blocking", "question")
 
 
 def review_problems(r) -> list[str]:
@@ -103,12 +115,84 @@ def review_problems(r) -> list[str]:
     for i, f in enumerate(r.get("findings") or [], 1):
         if not isinstance(f, dict) or f.get("kind") not in KINDS:
             out.append(f"finding {i} needs a kind, one of {', '.join(KINDS)}")
+        elif f["kind"] in NEEDS_EVIDENCE and not cited(f):
+            out.append(f'finding {i} ({f["kind"]}) needs "evidence": {{"path": <a changed file>, "line": <its line '
+                       "at the head>}, the line the ask rests on")
+    pre = sum(isinstance(f, dict) and f.get("kind") == "preexisting" for f in r.get("findings") or [])
+    texts = [r.get("body")] + [c.get("body") for c in r.get("comments") or [] if isinstance(c, dict)]
+    labels = sum(len(PRE.findall(t)) for t in texts if isinstance(t, str))
+    if pre > labels:
+        out.append(f'{pre} preexisting finding(s) but {labels} line(s) starting "Pre-existing:": '
+                   "start each inherited finding with it")
     return out
 
 
+def cited(f: dict) -> dict | None:
+    """The finding's evidence, when it names a path and a line from 1."""
+    e = f.get("evidence")
+    ok = isinstance(e, dict) and isinstance(e.get("path"), str) and e["path"] \
+        and isinstance(e.get("line"), int) and e["line"] >= 1
+    return e if ok else None
+
+
+EVIDENCE = """query ReviewEvidence($owner:String!,$name:String!,$number:Int!{decl}){{repository(owner:$owner,name:$name){{
+ pullRequest(number:$number){{{files}}}{blobs}}}}}"""
+
+
+def evidence(gh: hub.Gh, owner: str, repo: str, n: int, r: dict) -> tuple[list[str], bool]:
+    """What stops a blocking or question finding's evidence, and whether it
+    could be read: its path among the PR's changed files, its line inside that
+    file at the head. One query, and none when no such finding exists."""
+    asks = [(i, cited(f)) for i, f in enumerate(r.get("findings") or [], 1) if f.get("kind") in NEEDS_EVIDENCE]
+    if not asks:
+        return [], True
+    paths = sorted({e["path"] for _, e in asks})
+    q = EVIDENCE.format(decl="".join(f",$e{k}:String!" for k in range(len(paths))), files=hub.PR_FILES,
+                        blobs="".join(f" e{k}:object(expression:$e{k}){{... on Blob{{text isTruncated}}}}"
+                                      for k in range(len(paths))))
+    ref, at = f"{owner}/{repo}#{n}", r["head"][:7]
+    try:
+        d = gh.graphql(q, owner=owner, name=repo, number=n, **{f"e{k}": f"{r['head']}:{p}" for k, p in enumerate(paths)})
+        files = d["repository"]["pullRequest"]["files"]
+    except (hub.GhError, KeyError, TypeError) as e:
+        return [f"{ref} evidence unread ({e})"], False
+    changed = {x["path"] for x in files["nodes"]}
+    out = []
+    for i, e in asks:
+        where = f"finding {i}: evidence {e['path']}:{e['line']}"
+        if e["path"] not in changed:
+            if files["pageInfo"].get("hasNextPage"):
+                return [f"{ref} changes more than 100 files, so {where} could not be found among them"], False
+            out.append(f"{where} is not among the PR's changed files: cite the changed line the ask rests on")
+            continue
+        blob = d["repository"].get(f"e{paths.index(e['path'])}")
+        text = (blob or {}).get("text")
+        if blob is None:
+            out.append(f"{where}: the file is not there at {at}")
+        elif text is not None and e["line"] <= lines(text):
+            continue
+        elif text is None or blob.get("isTruncated"):
+            print(f"note: {where} is unchecked: the file is binary or too large to read at {at}")
+        else:
+            out.append(f"{where} is past the end of the file at {at} ({lines(text)} lines)")
+    return out, True
+
+
+def lines(text: str) -> int:
+    """Lines as GitHub numbers them: split on newline alone, a last line without one counted."""
+    return text.count("\n") + (bool(text) and not text.endswith("\n"))
+
+
+def kinds(r: dict) -> str:
+    """Each kind's count in KINDS order, `blocking:1,nit:2`, or `none`: the log
+    row keeps it, so a later round or a measurement reads more than a total."""
+    n = [(k, sum(f.get("kind") == k for f in r.get("findings") or [])) for k in KINDS]
+    return ",".join(f"{k}:{c}" for k, c in n if c) or "none"
+
+
 def verdict(r: dict) -> str:
-    """approvable: nothing but nits and considers; else the user reads it first."""
-    if r.get("escalate") or any(f.get("kind") not in ("nit", "consider") for f in r.get("findings") or []):
+    """approvable: nothing but nits, considers and preexisting; else the user reads it first."""
+    if r.get("escalate") or any(f.get("kind") not in APPROVABLE for f in r.get("findings") or []):
         return "needs your read"
     return "approvable"
 
@@ -136,7 +220,7 @@ def post(cfg: dict, gh: hub.Gh, owner: str, repo: str, n: int, r: dict) -> int:
     old = next((x for x in hub.open_items(cfg)[0] if x["kind"] == "reviewed" and same_pr(x["ref"], ref)), None)
     row = hub.log_event(cfg, "reviewed", verdict(r), ref=f"https://github.com/{owner}/{repo}/pull/{n}",
                         needs_user=True, corrects=old["id"] if old else "",
-                        detail=f"sha={r['head']} review={res.get('id')} findings={len(r.get('findings') or [])}")
+                        detail=f"sha={r['head']} review={res.get('id')} findings={len(r.get('findings') or [])} kinds={kinds(r)}")
     print(f"logged {row['id']}: reviewed {row['text']}")
     for t in hub.folded(cfg, hub.OPEN_DAYS):
         if t["kind"] == "todo" and re.search(rf"\bkey=review:{re.escape(ref)}@", t.get("detail") or ""):
@@ -193,6 +277,9 @@ def main(argv=None, gh=None) -> int:
                                           for p in lint(c["body"], cap)]
         gh = gh or hub.Gh()
         stops, known = live(gh, owner, repo, n, r["head"]) if not review_problems(r) else ([], True)
+        if known and not review_problems(r):
+            more, known = evidence(gh, owner, repo, n, r)
+            stops += more
         for p in bad + stops:
             print(f"{'FAIL' if known else 'BLOCKED'}: {p}")
         if not known:

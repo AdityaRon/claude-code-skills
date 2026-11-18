@@ -202,14 +202,19 @@ whole context.
    ```json
    {"head": "<the head: line, all 40 characters>", "body": "<findings only, no verdict, no Net: line>",
     "comments": [{"path": "src/a.py", "line": 3, "side": "RIGHT", "body": "<one finding>"}],
-    "findings": [{"kind": "nit"}, {"kind": "question"}], "escalate": "<why the user must read it; leave out if nothing>"}
+    "findings": [{"kind": "nit"}, {"kind": "question", "evidence": {"path": "src/a.py", "line": 3}}],
+    "escalate": "<why the user must read it; leave out if nothing>"}
    ```
 
-   One `findings` entry per finding, its kind `nit`, `consider`, `question` or
-   `blocking`. The body and each comment at most the `review-cap:` characters
-   (3 of 9 bodies once ran over and were trimmed by hand), leaving out what
-   another reviewer already raised (the transcript has every review and
-   thread). For an INBOUND PR the diff is `gh pr diff N --repo owner/repo`.
+   One `findings` entry per finding, its kind `nit`, `consider`, `question`,
+   `blocking`, or `preexisting` for what the PR inherited, its line starting
+   `Pre-existing:`. A `blocking` or `question` finding carries `evidence`, the
+   changed file and its line at the head the ask rests on; the lint refuses one
+   outside the PR's files or past the file's end. The body and each comment at
+   most the `review-cap:` characters (3 of 9 bodies once ran over and were
+   trimmed by hand), leaving out what another reviewer already raised (the
+   transcript has every review and thread). For an INBOUND PR the diff is
+   `gh pr diff N --repo owner/repo`.
    For a re-look it is the REVIEWED line's range,
    `gh api repos/owner/repo/compare/<my sha>...<head>`, read against my own
    open threads in the transcript: each fixed, not fixed, or a new issue. A
@@ -222,8 +227,8 @@ whole context.
    lints the body and each comment, re-reads the head and the open state,
    posts through the reviews API with the inline comments, and logs the review
    under Needs you with its verdict (`logged <id>: reviewed <verdict>`):
-   approvable when every finding is a nit or a consider and nothing is
-   escalated, else needs your read. It closes the review's todo. Exit 1 is a
+   approvable when every finding is a nit, a consider or preexisting and
+   nothing is escalated, else needs your read. It closes the review's todo. Exit 1 is a
    refusal, and the output says whether the file or the PR is the problem: fix
    the file and run it again, but a moved head means review again, and a
    closed or draft PR means no review. Exit 3: nothing posted or logged, so the

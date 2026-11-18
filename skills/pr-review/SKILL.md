@@ -13,18 +13,22 @@ description: How to write a PR review, answer review comments, and request revie
   below is the fallback for a repo with none.
 - Shape: open on the sources actually read, not the diff. Bold lead-ins for what
   you chased down, each citing `file`:line. Asks numbered and ranked, non-blocking
-  unless the next bullet says otherwise; "Nit:" for trivia; label what is
-  inherited, not introduced. Close "Net: approving" only on a review submitted
-  as an approval the user granted, when no ask blocks; a comment review carries
-  findings only.
+  unless the next bullet says otherwise; "Nit:" for trivia; "Pre-existing:" for
+  what is inherited, not introduced, which never blocks. Close "Net: approving"
+  only on a review submitted as an approval the user granted, when no ask
+  blocks; a comment review carries findings only.
 - Rate an ask by its fail direction, not by how rare its trigger is. A path where
   the change's own headline claim does not hold (a case-insensitive match that
   still returns nothing once a second filter is set), or one that returns a silent
   wrong answer marked complete (a paged read that reports nothing truncated after
   it stopped early), is a `[blocking]` ask: it holds the approval until answered.
+  Before posting a blocking ask, try to disprove it: read the caller, run the
+  case if you can. A second agent to disprove it only when asked.
 - Read every review and inline thread already on the PR first. Leave out what
   another reviewer raised; where you would add to it, reply on their thread
   instead. A finding raised twice costs the author a second answer.
+- Name the head sha you read; if the head moved before you post, read the new
+  range first.
 - An ask the diff cannot be edited to satisfy is a rollout note for the ticket.
 - Edit a review in place to keep APPROVED (`gh api -X PUT .../reviews/<id>`);
   trim rather than re-post. A review submitted with an empty body cannot be

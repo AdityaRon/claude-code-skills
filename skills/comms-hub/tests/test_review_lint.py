@@ -19,15 +19,31 @@ Mutations (run.py --mutate applies each and expects this file to fail):
   inline-dropped: review_lint.py: `for c in r.get("comments") or []]}` => `for c in []]}`
   inline-unlinted: review_lint.py: `for p in lint(c["body"], cap)]` => `for p in []]`
   short-sha-ok: review_lint.py: `if not re.fullmatch(r"[0-9a-f]{40}", str(r.get("head") or "")):` => `if False:`
-  question-approvable: review_lint.py: `any(f.get("kind") not in ("nit", "consider")` => `any(f.get("kind") == "blocking"`
+  question-approvable: review_lint.py: `any(f.get("kind") not in APPROVABLE` => `any(f.get("kind") == "blocking"`
+  preexisting-blocks: review_lint.py: `APPROVABLE = ("nit", "consider", "preexisting")` => `APPROVABLE = ("nit", "consider")`
+  preexisting-unlabelled-ok: review_lint.py: `if pre > labels:` => `if False:`
   escalation-ignored: review_lint.py: `if r.get("escalate") or any(` => `if any(`
+  evidence-always-asked: review_lint.py: `if not asks:` => `if False:`
+  evidence-unchecked: review_lint.py: `more, known = evidence(gh, owner, repo, n, r)` => `more = []`
+  evidence-optional: review_lint.py: `elif f["kind"] in NEEDS_EVIDENCE and not cited(f):` => `elif False:`
+  evidence-nit-required: review_lint.py: `NEEDS_EVIDENCE = ("blocking", "question")` => `NEEDS_EVIDENCE = KINDS`
+  evidence-path-unchecked: review_lint.py: `if e["path"] not in changed:` => `if False:`
+  evidence-line-unchecked: review_lint.py: `elif text is not None and e["line"] <= lines(text):` => `elif text is not None:`
+  evidence-gone-ok: review_lint.py: `if blob is None:` => `if False:`
+  evidence-other-head: review_lint.py: `f"{r['head']}:{p}"` => `f"HEAD:{p}"`
+  evidence-unknown-passes: review_lint.py: `return [f"{ref} evidence unread ({e})"], False` => `return [], True`
+  evidence-partial-refuses: review_lint.py: `if files["pageInfo"].get("hasNextPage"):` => `if False:`
+  evidence-truncated-refused: review_lint.py: `elif text is None or blob.get("isTruncated"):` => `elif text is None:`
+  last-line-uncounted: review_lint.py: `+ (bool(text) and not text.endswith("\n"))` => ``
+  kinds-unlogged: review_lint.py: ` kinds={kinds(r)}")` => `")`
+  kinds-unordered: review_lint.py: `for k, c in n if c) or "none"` => `for k, c in sorted(n) if c) or "none"`
   post-unlogged: review_lint.py: `row = hub.log_event(cfg, "reviewed", verdict(r),` => `row = dict(id="x", text="", ref="", kind="reviewed") or hub.log_event(cfg, "reviewed", verdict(r),`
   todo-left-open: review_lint.py: `hub.log_event(cfg, "done", "review posted", ref=row["ref"], corrects=t["id"])` => `pass`
   rows-pile-up: review_lint.py: `corrects=old["id"] if old else "",` => `corrects="",`
   net-verdict-ok: review_lint.py: `if VERDICT.search(line):` => `if False:`
   net-any-case: review_lint.py: `VERDICT = re.compile(r"(?:^` => `VERDICT = re.compile(r"(?i)(?:^`
   net-double-colon: review_lint.py: `\s*:(?!:)")` => `\s*:")`
-  failed-post-logged: review_lint.py:`print(f"BLOCKED: the post failed, so nothing was logged and the review is still to do: {e}")
+  failed-post-logged: review_lint.py: `print(f"BLOCKED: the post failed, so nothing was logged and the review is still to do: {e}")
         return 3` => `res = {}`
 """
 import contextlib
@@ -35,7 +51,7 @@ import io
 import re
 import unittest
 
-from fakes import BIN, CONFIG, Env, Fail, FakeGh
+from fakes import BIN, CONFIG, Env, Fail, FakeGh, page
 
 import hub
 import review_lint as rl
@@ -133,7 +149,26 @@ def review(**over):
             "findings": [{"kind": "nit"}, {"kind": "consider"}], **over}
 
 
-def post(env, r, state=None, answer=None, apply=True):
+EV = {"path": "src/a.py", "line": 3}
+# The repo at the review's head: src/a.py has 10 lines, README.md is unchanged by the PR.
+SRC = {"src/a.py": "".join(f"line {i}\n" for i in range(1, 11)), "README.md": "# app\n", "src/b.py": "a\nb"}
+
+
+def at_head(files=("src/a.py",), more=False, blobs=None):
+    """Answers ReviewEvidence as GitHub would: the PR's changed files, and each
+    expression's blob, null for a path not there at that sha."""
+    def answer(v):
+        out = {"pullRequest": {"files": page([{"path": f} for f in files], more=more)}}
+        for k, expr in v.items():
+            if re.fullmatch(r"e\d+", k):
+                sha, _, path = expr.partition(":")
+                b = {**SRC, **(blobs or {})}.get(path) if sha == FULL else None
+                out[k] = b if not isinstance(b, str) else {"text": b, "isTruncated": False}
+        return {"repository": out}
+    return answer
+
+
+def post(env, r, state=None, answer=None, apply=True, files=None):
     path = env.dir / "review.json"
     path.write_text(r if isinstance(r, str) else __import__("json").dumps(r))
     sent = []
@@ -142,10 +177,13 @@ def post(env, r, state=None, answer=None, apply=True):
         sent.append((endpoint, payload))
         return answer if answer is not None else {"id": 77, "state": "COMMENTED",
                                                   "html_url": "https://github.com/acme/app/pull/12#pullrequestreview-77"}
-    gh = hub.Gh(runner=FakeGh(rest={"pr view": state or {**OPEN, "headRefOid": FULL}, "post": on_post}), pause=0)
+    runner = FakeGh(graphql={"ReviewEvidence": files or at_head()},
+                    rest={"pr view": state or {**OPEN, "headRefOid": FULL}, "post": on_post})
+    gh = hub.Gh(runner=runner, pause=0)
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
         rc = rl.main(["--post", str(path), "--pr", "acme/app#12", *(["--apply"] if apply else [])], gh=gh)
+    post.runner = runner
     return rc, out.getvalue(), sent
 
 
@@ -187,14 +225,95 @@ class Post(unittest.TestCase):
             row, = logged(env)
             self.assertEqual((row["kind"], row["text"], row["needs_user"]), ("reviewed", "approvable", True))
             self.assertIn(f"sha={FULL}", row["detail"])
+            # Per kind, not only the total, in KINDS order, for the next round and a later measurement.
+            self.assertTrue(row["detail"].endswith(" findings=2 kinds=consider:1,nit:1"), row["detail"])
 
     def test_a_question_blocking_or_escalation_needs_the_users_read(self):
-        for over in ({"findings": [{"kind": "nit"}, {"kind": "question"}]}, {"findings": [{"kind": "blocking"}]},
+        for over in ({"findings": [{"kind": "nit"}, {"kind": "question", "evidence": EV}]},
+                     {"findings": [{"kind": "blocking", "evidence": EV}]},
                      {"findings": [], "escalate": "touches the billing schema"}):
             with Env(now="2026-10-21T17:00:00+00:00") as env:
                 rc, out, _ = post(env, review(**over))
                 self.assertEqual(rc, 0, out)
                 self.assertEqual(logged(env)[0]["text"], "needs your read", over)
+                if over["findings"][:1] == [{"kind": "nit"}]:
+                    self.assertTrue(logged(env)[0]["detail"].endswith(" kinds=question:1,nit:1"), "severity order")
+
+    def test_a_labelled_preexisting_finding_stays_approvable(self):
+        # What the PR inherited is not the author's to fix here, so it never holds the approval.
+        body = "The retry loop never backs off (src/a.py:3).\n\n1. **Pre-existing:** the cap was never set (src/a.py:9)."
+        comments = [{"path": "src/a.py", "line": 3, "body": "- Pre-existing**:** this sleep predates the PR."}]
+        with Env(now="2026-10-21T17:00:00+00:00") as env:
+            rc, out, sent = post(env, review(body=body, comments=comments,
+                                             findings=[{"kind": "nit"}, {"kind": "preexisting"}, {"kind": "preexisting"}]))
+            self.assertEqual((rc, len(sent)), (0, 1), out)
+            self.assertEqual(logged(env)[0]["text"], "approvable")
+
+    def test_a_preexisting_finding_without_its_label_posts_nothing(self):
+        with Env(now="2026-10-21T17:00:00+00:00") as env:
+            for body in ("The cap was never set (src/a.py:9).",
+                         "The cap was never set, which is Pre-existing: src/a.py:9.",
+                         "Pre-existing: the cap was never set (src/a.py:9)."):
+                two = body.startswith("Pre-existing") and 2
+                rc, out, sent = post(env, review(body=body, findings=[{"kind": "preexisting"}] * (two or 1)))
+                self.assertEqual((rc, sent), (1, []), out)
+                self.assertIn(f'{two or 1} preexisting finding(s) but {1 if two else 0} line(s) starting "Pre-existing:"', out)
+            self.assertEqual(logged(env), [])
+
+    def test_a_blocking_or_question_finding_without_evidence_posts_nothing(self):
+        with Env(now="2026-10-21T17:00:00+00:00") as env:
+            for f in ({"kind": "blocking"}, {"kind": "question", "evidence": {"path": "src/a.py"}},
+                      {"kind": "blocking", "evidence": {"path": "src/a.py", "line": 0}},
+                      {"kind": "question", "evidence": {"path": "", "line": 3}}):
+                rc, out, sent = post(env, review(findings=[{"kind": "nit"}, f]))
+                self.assertEqual((rc, sent), (1, []), out)
+                self.assertIn(f'finding 2 ({f["kind"]}) needs "evidence": {{"path": <a changed file>', out)
+            self.assertEqual(logged(env), [])
+
+    def test_nits_considers_and_preexisting_need_no_evidence_and_cost_no_query(self):
+        with Env(now="2026-10-21T17:00:00+00:00") as env:
+            r = review(body="Pre-existing: the cap was never set (src/a.py:9).",
+                       findings=[{"kind": "nit"}, {"kind": "consider"}, {"kind": "preexisting"}])
+            rc, out, sent = post(env, r)
+            self.assertEqual((rc, len(sent)), (0, 1), out)
+            self.assertEqual(post.runner.count("ReviewEvidence"), 0, "no blocking or question finding, no query")
+
+    def test_evidence_rests_on_a_changed_file_and_a_line_inside_it_at_the_head(self):
+        def ask(e, files=None, apply=True):
+            return post(env, review(findings=[{"kind": "blocking", "evidence": e}]), files=files, apply=apply)
+        with Env(now="2026-10-21T17:00:00+00:00") as env:
+            rc, out, sent = ask(EV)
+            self.assertEqual((rc, len(sent)), (0, 1), out)
+            call, = [c for c in post.runner.calls if c[:2] == ["api", "graphql"]]
+            self.assertIn(f"e0={FULL}:src/a.py", call, "read at the head the review read")
+            rc, out, sent = ask({"path": "src/b.py", "line": 2}, files=at_head(("src/a.py", "src/b.py")))
+            self.assertEqual((rc, len(sent)), (0, 1), "the last line has no newline and still counts")
+            for e, files, why in (
+                    ({"path": "README.md", "line": 1}, None, "evidence README.md:1 is not among the PR's changed files"),
+                    ({"path": "src/a.py", "line": 11}, None, "evidence src/a.py:11 is past the end of the file at "
+                                                             "abcdef1 (10 lines)"),
+                    ({"path": "src/b.py", "line": 3}, at_head(("src/b.py",)), "src/b.py:3 is past the end"),
+                    ({"path": "src/gone.py", "line": 2}, at_head(("src/gone.py",)),
+                     "evidence src/gone.py:2: the file is not there at abcdef1")):
+                for apply in (True, False):
+                    rc, out, sent = ask(e, files, apply)
+                    self.assertEqual((rc, sent), (1, []), out)
+                    self.assertIn(f"FAIL: finding 1: {why}" if why.startswith("evidence") else why, out)
+            self.assertEqual(len(logged(env)), 2, "only the two posts that went out")
+
+    def test_evidence_that_cannot_be_read_is_unknown_not_refused_nor_passed(self):
+        with Env(now="2026-10-21T17:00:00+00:00") as env:
+            r = review(findings=[{"kind": "question", "evidence": {"path": "src/big.py", "line": 9}}])
+            rc, out, sent = post(env, r, files=at_head(("src/big.py",), blobs={"src/big.py": {"text": "x\n", "isTruncated": True}}))
+            self.assertEqual((rc, len(sent)), (0, 1), out)
+            self.assertIn("note: finding 1: evidence src/big.py:9 is unchecked: the file is binary or too large", out)
+            for files, why in ((at_head(("src/c.py",), more=True), "acme/app#12 changes more than 100 files, so "
+                                                                   "finding 1: evidence src/big.py:9 could not be found"),
+                               ([Fail(), Fail()], "acme/app#12 evidence unread")):
+                rc, out, sent = post(env, r, files=files)
+                self.assertEqual((rc, sent), (3, []), out)
+                self.assertIn(f"BLOCKED: {why}", out)
+            self.assertEqual(len(logged(env)), 1, "only the post that went out")
 
     def test_nothing_posts_on_a_lint_or_live_failure(self):
         with Env(now="2026-10-21T17:00:00+00:00") as env:
@@ -235,6 +354,8 @@ class Post(unittest.TestCase):
                                  detail="key=review:acme/app#12@abcdef1")
             rc, out, _ = post(env, review(findings=[]))
             self.assertEqual(rc, 0, out)
+            row = next(r for r in logged(env) if r["kind"] == "reviewed" and r["corrects"] == first["id"])
+            self.assertTrue(row["detail"].endswith(" findings=0 kinds=none"), row)
             open_ = hub.open_items(cfg)[0]
             self.assertEqual([(r["id"], r["text"]) for r in open_], [(first["id"], "approvable")],
                              "one row per PR, now the re-look's verdict")
