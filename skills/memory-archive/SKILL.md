@@ -44,19 +44,21 @@ anything that is not a pure permutation of the existing lines. Keep that split.
 
 ## Procedure
 
-**1. Establish there is pressure, and print the numbers.**
+**1. Establish there is pressure.** `--status` prints lines, bytes, both limits
+and `pressure: yes|no`, judged as memory-lint and session-start judge it (180
+lines or 20,000 bytes). On `pressure: no`, stop: say so with the numbers and
+change nothing.
 
 ```bash
-grep -c '^- \[' MEMORY.md      # entries; the 200-line limit
-wc -c < MEMORY.md              # bytes; the 25,000 limit
+bash ~/.claude/memory-index.sh --store <slug> --status
 ```
 
-If neither is near, stop, say so, and change nothing.
-
-**2. Fix ordering first, then re-measure the harm, not the total.**
+**2. Fix ordering first, then re-measure the harm, not the total.** `--diff`
+lists each entry the reorder would move; judge any hand-placed line there
+before `--write` moves it.
 
 ```bash
-bash ~/.claude/memory-index.sh --store <slug>            # dry run
+bash ~/.claude/memory-index.sh --store <slug> --diff     # dry run, with the moves
 bash ~/.claude/memory-index.sh --store <slug> --write    # if out of order
 grep -n '^- \[' MEMORY.md | awk -F: '$1>200' | grep -c 'feedback_'
 ```
@@ -64,23 +66,26 @@ grep -n '^- \[' MEMORY.md | awk -F: '$1>200' | grep -c 'feedback_'
 Zero means the tail holds only the least costly entries. That may be enough.
 
 **3. Relieve the byte limit first; it needs no archiving.** Index hooks drift
-long and the detail stays in the memory file, so trimming them loses nothing:
+long and the detail stays in the memory file, so trimming them loses nothing.
+`--long-hooks` lists lines over 110 characters, counted as memory-lint counts
+them, with the room each hook has after its title and filename:
 
 ```bash
-awk '/^- \[/ { n=length($0); if (n>110) print n"\t"$0 }' MEMORY.md | sort -rn | head -20
+bash ~/.claude/memory-index.sh --store <slug> --long-hooks
 ```
 
 Trimming the 13 worst hooks on a real store cleared the limit outright.
 
-**4. Archive the cheapest end, mechanically.** `--archive-overflow` moves the
-oldest `project` lines, then the oldest `reference`, into `MEMORY_ARCHIVE.md`
-with a pointer left behind, draining to a margin below the cap. It never peels
-ACTIVE, `feedback`, untyped entries, or anything modified in the last 2 days
-(`--min-age-days`, because the cheapest tier is not the cheapest entry when
-that tier holds one memory written this morning):
+**4. Archive the cheapest end.** `--archive-overflow` moves the oldest
+`project` lines, then the oldest `reference`, draining to a margin below the
+cap. It never peels ACTIVE, `feedback`, untyped entries, or anything modified
+in the last 2 days (`--min-age-days`). For lines you judged, `--archive` moves
+exactly those under a new `## TEXT` block; it is a dry run until `--write`,
+and `--write` also reorders:
 
 ```bash
 bash ~/.claude/memory-index.sh --store <slug> --archive-overflow
+bash ~/.claude/memory-index.sh --store <slug> --archive project_a.md project_b.md --heading "<why these>"
 ```
 
 Spend your judgment on what deserves promoting UP into the ACTIVE block, and on
@@ -92,16 +97,32 @@ did not.
 reaches `feedback_`.** When several lessons each record a different way of the
 same failure (a tool's output describing the lookup rather than the world, say),
 propose one `feedback_hub_<slug>` memory stating the rule with one bullet per
-instance (wikilink, trigger, tell). Instance files stay on disk unedited; their
-index lines move to `MEMORY_ARCHIVE.md` under a `### feedback_hub_<slug>`
-heading; the hub's own line goes in the index. Say what it costs: a situation
+instance (wikilink, trigger, tell). Instance files stay on disk unedited; the
+hub's own line stays in the index, and `--archive <instances> --heading
+feedback_hub_<slug>` moves the instances' lines under `## feedback_hub_<slug>`
+(it refuses an instance the hub does not link). Say what it costs: a situation
 the index used to name directly is now one hop away. Hub only what truly shares
-a principle. `hooks/memory-lint.sh` names the existing hubs when a new
-`feedback_` memory is written into a store that has them.
+a principle.
 
 **6. Hand back a proposal, not a change.** For each candidate: name, type, why
 it qualifies, what a wrong call would cost. Then lines now, lines after, limit.
 A human approves; `memory-index.sh` writes.
+
+## The aggressive tier: only when asked for it
+
+Steps 1 to 6 are the default and usually enough. Only when the user asks for
+more, and step 1 said `pressure: yes`, a line may also move with **evidence
+per line**:
+
+- **Finished work**: the tracker or GitHub state was checked, not inferred
+  from the hook. `bash ~/.claude/memory-verify.sh --jira-keys` prints the
+  stored Jira keys as `key in (...)` lines, one JQL search per 50 keys.
+- **A duplicated reference**: a skill or rule line already says the same
+  thing and always loads. Quote that line and name its file.
+
+One `--archive` run per reason, its heading naming the reason and the date
+(`--heading "Tracker Done, checked 2026-11-18"`). Which session wrote a memory
+is no evidence: sessions started in one directory share one index.
 
 ## Rules
 
@@ -109,7 +130,7 @@ A human approves; `memory-index.sh` writes.
   hub whose own line IS loaded. If you cannot name that line, it is a deletion
   wearing a different word.
 - **`reference_` is rarely archivable.** A fact does not become false because
-  its project ended.
+  its project ended. The aggressive tier's duplicate is the one exception.
 - **Finished is not worthless.** Archive the lifecycle, keep the lesson; if the
   lesson is buried in a `project_` memory, propose extracting it first.
 - **Do not re-propose "retire settled memories with no lesson-shaped wording".**
@@ -120,4 +141,5 @@ A human approves; `memory-index.sh` writes.
   against: trim hooks, archive two, merge none, and stay ~8 entries over the
   line limit rather than archive live work. An index over its limit with no
   `feedback_` or `reference_` past the cut is working as intended; report the
-  overage and why you are leaving it.
+  overage and why you are leaving it. The aggressive tier is for when the user
+  asks for more than that.

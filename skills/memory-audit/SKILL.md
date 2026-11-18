@@ -50,17 +50,23 @@ Each line is `{status, store, file, detail}`, and each status means one thing:
 - `TRIAGE`: asserts open state with no `verify:` block, so nothing can check
   it. Needs steps 2 and 3. **Not age-gated**: an unverifiable claim about
   something still open is a defect the moment it is written.
-- `NEEDS_MCP`: a well-formed claim only this skill can resolve, over MCP.
-- `SKIP`: malformed or unrecognised claim. The memory itself needs fixing.
-- `VERIFIED`: nothing to do.
+- `NEEDS_MCP`: a Jira claim only this skill can resolve. Batch them:
+  `memory-verify.sh --jira-keys` prints `key in (...)` lines of 50 keys; run
+  each line as one JQL search over MCP, never one lookup per key.
+- `SKIP`: malformed claim, or a `gh` ref GitHub did not answer. Fix the memory.
+- `ORPHAN`: no index line, archive line or hub `[[link]]` reaches the file, so
+  nothing recalls it. Read it, then propose its line; never delete it for this.
+- `VERIFIED`, `WAIVED`: nothing to do. Both are counted; `--all` lists them.
 - `HOOK`: advisory. An index hook trails off mid-claim while the memory's own
   `description:` still carries the payload. Rewrite the one line in `MEMORY.md`
   from the description; nothing else changes.
 - `OVERSIZE`: the index is past a load limit. Claude Code already reports this
   on the write that caused it; hand it to `memory-archive`, not this skill.
-- `SETTLED`, `CANDIDATE`: advisory, `--curate` only, and slow (it looks up
-  every claim in the store; a full run exceeded 120 s once). Use it on a
-  shortlist, never as the opening move.
+- `SETTLED`, `CANDIDATE`: advisory, `--curate` only.
+
+Every run looks GitHub claims up in one GraphQL call per repo per 100 claims,
+so what is slow now is the pass over the memory files, not the claims, and
+`--curate` adds a second pass over every file.
 
 **2. Work out what the memory actually claims.**
 
@@ -101,8 +107,7 @@ smallest correct one:
   user confirm. If the memory records a *lesson* rather than a status, the
   lesson usually outlives the ticket: keep it, fix the status line.
 
-**4. Leave a `verify:` block behind**, near the top of the body, after the
-frontmatter:
+**4. Leave a `verify:` block behind**, near the top of the body:
 
 ```yaml
 verify:
@@ -110,26 +115,22 @@ verify:
   - jira PROJ-123 Done
 ```
 
-Format is `<kind> <ref> <expected-state>`, one claim per line:
-
-- `gh`: ref must be `owner/repo#number`; expected is `merged`, `open`, or
-  `closed`. Works for issues too.
-- `jira`: ref is the issue key; expected is the status name. Resolved by this
-  skill via MCP, not by the script.
+One `<kind> <ref> <expected-state>` claim per line: `gh` takes `owner/repo#number`
+and `merged`, `open` or `closed` (issues too); `jira` takes the issue key and
+the status name, and this skill resolves it over MCP, not the script.
 
 Record what you expect to *stay* true. `merged` is stable; `open` will go stale
 by design, which is the point: that is the claim worth re-checking.
 
+When no lookup can settle the wording (a recurring rota, a quoted example), put
+`verify: none <reason>` in the frontmatter instead. The memory is then counted
+as waived, not triaged; with no reason it is a SKIP and waives nothing.
+
 **5. Keep the index honest.** If you rename or delete a memory, update the
-matching `- [Title](file.md) — hook` line in that store's `MEMORY.md`.
-
-`memory-verify.sh` reports index lines as `MEMORY.md:<line>`, aged by the memory
-they link to. Treat those like any other finding: resolve the claim, then
-rewrite the one-liner. The index loads into every session, so a stale hook
-there is read far more often than the memory behind it.
-
-The index gets no `verify:` block of its own; put that on the memory it links
-to, and keep the hook consistent with it.
+matching `- [Title](file.md) — hook` line in that store's `MEMORY.md`. A finding
+on `MEMORY.md:<line>` is aged by the memory it links to: resolve the claim, then
+rewrite the one-liner, which loads every session. The index gets no `verify:`
+block; put it on the memory the line links to and keep the hook consistent.
 
 ## Rules
 
@@ -142,8 +143,5 @@ to, and keep the hook consistent with it.
   with `contradicts CLAUDE.md, verify which is current` and raise it.
 - **Batch your questions.** Audit the set, then bring one set of proposals, not
   one per file.
-
-## Scope
-
-Default to the current project's store. Audit every store only when asked:
-memory is siloed per launch directory, so one repo can have two stores.
+- **One store by default**, the current project's. Audit every store only when
+  asked: memory is siloed per launch directory, so one repo can have two stores.
