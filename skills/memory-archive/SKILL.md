@@ -115,8 +115,9 @@ more, and step 1 said `pressure: yes`, a line may also move with **evidence
 per line**:
 
 - **Finished work**: the tracker or GitHub state was checked, not inferred
-  from the hook. `bash ~/.claude/memory-verify.sh --jira-keys` prints the
-  stored Jira keys as `key in (...)` lines, one JQL search per 50 keys.
+  from the hook. `bash ~/.claude/memory-verify.sh --jira-keys` prints the keys
+  of `jira` verify claims as `key in (...)` lines, one JQL search per 50 keys;
+  a memory with no verify block needs its key read from the body.
 - **A duplicated reference**: a skill or rule line already says the same
   thing and always loads. Quote that line and name its file.
 

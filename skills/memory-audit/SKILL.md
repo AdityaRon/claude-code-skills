@@ -53,7 +53,9 @@ Each line is `{status, store, file, detail}`, and each status means one thing:
 - `NEEDS_MCP`: a Jira claim only this skill can resolve. Batch them:
   `memory-verify.sh --jira-keys` prints `key in (...)` lines of 50 keys; run
   each line as one JQL search over MCP, never one lookup per key.
-- `SKIP`: malformed claim, or a `gh` ref GitHub did not answer. Fix the memory.
+- `SKIP`: a malformed claim, or a `gh` ref that is `not-found`: fix the memory.
+  `lookup-failed` or `gh-unavailable` is gh's failure, not the memory's: check
+  `gh auth status` and rerun before editing anything.
 - `ORPHAN`: no index line, archive line or hub `[[link]]` reaches the file, so
   nothing recalls it. Read it, then propose its line; never delete it for this.
 - `VERIFIED`, `WAIVED`: nothing to do. Both are counted; `--all` lists them.
