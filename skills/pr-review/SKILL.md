@@ -25,6 +25,8 @@ description: How to write a PR review, answer review comments, and request revie
 - Read every review and inline thread already on the PR first. Leave out what
   another reviewer raised; where you would add to it, reply on their thread
   instead. A finding raised twice costs the author a second answer.
+- Name the head sha you read; if the head moved before you post, read the new
+  range first.
 - An ask the diff cannot be edited to satisfy is a rollout note for the ticket.
 - Edit a review in place to keep APPROVED (`gh api -X PUT .../reviews/<id>`);
   trim rather than re-post. A review submitted with an empty body cannot be
