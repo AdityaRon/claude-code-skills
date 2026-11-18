@@ -22,6 +22,8 @@ description: How to write a PR review, answer review comments, and request revie
   still returns nothing once a second filter is set), or one that returns a silent
   wrong answer marked complete (a paged read that reports nothing truncated after
   it stopped early), is a `[blocking]` ask: it holds the approval until answered.
+  Before posting a blocking ask, try to disprove it: read the caller, run the
+  case if you can. A second agent to disprove it only when asked.
 - Read every review and inline thread already on the PR first. Leave out what
   another reviewer raised; where you would add to it, reply on their thread
   instead. A finding raised twice costs the author a second answer.

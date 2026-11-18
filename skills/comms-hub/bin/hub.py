@@ -1562,6 +1562,11 @@ def split_pr(ref: str) -> tuple[str, str, int]:
 
 # ---- review and CI state ----------------------------------------------------
 
+# A PR's changed files, one page, in the query that already reads the PR:
+# review_lint.py checks a finding's evidence against them, pr_transcript.py
+# matches the repo's review checklist to them.
+PR_FILES = "files(first:100){pageInfo{hasNextPage} nodes{path}}"
+
 def login(actor) -> str | None:
     return (actor or {}).get("login")
 
