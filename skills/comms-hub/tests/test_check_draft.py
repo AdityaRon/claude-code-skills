@@ -39,10 +39,10 @@ Mutations (run.py --mutate applies each and expects this file to fail):
   claim-warns-unprinted: check_draft.py: `for w in doubts:` => `for w in []:`
   scheduled-asks-merged: check_draft.py: `"asks": args.asks,` => `"asks": asks,`
   en-dash-ok: check_draft.py: `if EN_DASH in line:` => `if False:`
-  aws-temp-key-missed: check_draft.py: `(?:AKIA|ASIA)[0-9A-Z]{16}` => `AKIA[0-9A-Z]{16}`
+  aws-temp-key-missed: check_draft.py: `r"|(?:AKIA|ASIA)" + AWS_SAMPLE` => `r"|AKIA" + AWS_SAMPLE`
   launchdarkly-key-missed: check_draft.py: `|(?:sdk|mob|api)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}` => ``
   pem-missed: check_draft.py: `|-----BEGIN [A-Z ]*-----` => ``
-  assignment-missed: check_draft.py: `|(?i:[a-z_]*(?:key|token|secret|password)\s*[=:]\s*[\"']?[\w./+-]{8,})` => ``
+  assignment-missed: check_draft.py: `|(?i:[a-z_]*(?:key|token|secret|password)\\?[\"']?\s*[=:]\s*\\?[\"']?(?![A-Za-z0-9/+=]{30}EXAMPLEKEY(?![\w./+-]))[\w./+-]{8,})` => ``
   mention-map-ignored: check_draft.py: `login = logins.get(sid)` => `login = None`
   answers-unchecked: check_draft.py: `if args.answers and args.reply != max(args.answers, key=ts_key):` => `if False:`
   replies-optional: check_draft.py: `if stamp["target"].startswith("reply:") and not args.replies and stamp["send"] != "schedule":` => `if False:`
