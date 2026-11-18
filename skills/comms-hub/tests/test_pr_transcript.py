@@ -14,7 +14,9 @@ Mutations (run.py --mutate applies each and expects this file to fail):
   checklist-anchored-basename: pr_transcript.py: `out, i = "" if "/" in g else "(?:.*/)?", 0` => `out, i = "", 0`
   checklist-partial-ok: pr_transcript.py: `if pr["files"]["pageInfo"].get("hasNextPage"):` => `if False:`
   checklist-unreadable-silent: pr_transcript.py: `bad.append(str(n))` => `pass`
-  checklist-lookup-failure-ok: pr_transcript.py: `raise hub.GhError(f"whether {CHECKLIST} is on {base} is unknown: {e}")` => `return []`
+  checklist-lookup-blocks: pr_transcript.py: `return [f"checklist: could not read {CHECKLIST} from {base} ({e})", ""]` => `raise`
+  checklist-lookup-silent: pr_transcript.py: `return [f"checklist: could not read {CHECKLIST} from {base} ({e})", ""]` => `return []`
+  checklist-lookup-unprinted: pr_transcript.py: `print(checks[0])` => `pass`
   checklist-truncated-ok: pr_transcript.py: `if blob.get("text") is None or blob.get("isTruncated"):` => `if blob.get("text") is None:`
 """
 import contextlib
@@ -139,10 +141,23 @@ class Transcript(unittest.TestCase):
                 self.assertIn(why, out)
             rc, out = run(env, {"repository": {"pullRequest": pr(more_files=True)}})
             self.assertEqual(rc, 0, "a long file list matters only to a checklist")
-            # A lookup that failed says nothing about whether there is a checklist, so the transcript is not complete.
+
+    def test_a_failed_lookup_is_one_line_not_a_block(self):
+        # Opt-in: a repo that never added a checklist must not lose its transcript to the lookup.
+        with Env() as env:
             rc, out = run(env, {"repository": {"pullRequest": pr()}}, checklist=[Fail(), Fail()])
-            self.assertEqual(rc, 3, out)
-            self.assertIn("BLOCKED: acme/app#7 review checklist: whether .claude/review-checklist.tsv is on main is unknown", out)
+            self.assertEqual(rc, 0, out)
+            lines = out.splitlines()
+            line = next(l for l in lines if l.startswith("checklist:"))
+            self.assertTrue(line.startswith("checklist: could not read .claude/review-checklist.tsv from main (gh api"), line)
+            self.assertLess(lines.index("## Description"), lines.index(line))
+            self.assertLess(lines.index(line), lines.index("## Conversation, oldest first"))
+            self.assertNotIn("BLOCKED", out)
+            rc, out = run(env, {"repository": {"pullRequest": pr()}}, "-o", str(env.dir / "pr-7.md"),
+                          checklist=[Fail(), Fail()])
+            self.assertEqual(rc, 0, out)
+            self.assertTrue(out.splitlines()[2].startswith("checklist: could not read"), "the caller sees it too")
+            self.assertIn("checklist: could not read", (env.dir / "pr-7.md").read_text())
 
     def test_more_than_one_page_or_an_unreadable_pr_blocks(self):
         with Env() as env:

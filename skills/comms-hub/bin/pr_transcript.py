@@ -19,9 +19,9 @@ separated: id, path glob, diff regex (may be empty), check, incident; `#` lines
 and a header row starting `id` are skipped. In a glob `*` and `?` stop at `/`,
 `**` crosses it, and a glob with no `/` matches at any depth. The diff regex
 is printed with its row for the reviewer to apply. No file, no section: one
-small query finds that out.
-Exit 0, or 3 when the PR, or its checklist or whether it has one, could not
-be read in full.
+small query finds that out. A lookup that fails is one `checklist: could not
+read` line, not a block: an opt-in check never stops a repo that did not opt in.
+Exit 0, or 3 when the PR, or a checklist its base has, could not be read in full.
 """
 from __future__ import annotations
 
@@ -67,14 +67,14 @@ def glob(g: str) -> re.Pattern:
 
 def checklist(gh: hub.Gh, owner: str, name: str, pr: dict) -> list[str]:
     """The Checklist section: the base's rows whose glob matches a changed file,
-    or nothing when the base has no checklist. Raises GhError when the lookup
-    fails, or the checklist cannot be read or matched in full."""
+    nothing when the base has no checklist, and one line when the lookup fails.
+    Raises GhError when a checklist is there and cannot be read or matched in full."""
     base = pr["baseRefName"]
     at = f"refs/heads/{base}:{CHECKLIST}"
     try:
         blob = gh.graphql(CHECKLIST_QUERY, owner=owner, name=name, at=at)["repository"]["object"]
     except hub.GhError as e:
-        raise hub.GhError(f"whether {CHECKLIST} is on {base} is unknown: {e}")
+        return [f"checklist: could not read {CHECKLIST} from {base} ({e})", ""]
     if blob is None:
         return []
     if blob.get("text") is None or blob.get("isTruncated"):
@@ -167,6 +167,8 @@ def main(argv=None, gh=None) -> int:
         with open(args.out, "w", encoding="utf-8") as f:
             f.write(text)
         print("\n".join(text.splitlines()[:2]))
+        if checks[:1] and checks[0].startswith("checklist: could not read"):
+            print(checks[0])
         print(f"{len(text.splitlines())} lines -> {args.out}")
     else:
         sys.stdout.write(text)
