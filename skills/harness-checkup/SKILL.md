@@ -9,7 +9,7 @@ The harness measures its own costs. This skill runs that and relays it; it adds
 no measurement of its own.
 
 1. Run `python3 ~/.claude/harness-checkup.py` (`--days N` for another window,
-   `--json` for data). It takes 12 to 15 s and is offline. If the file is
+   `--json` for data). It takes up to about 30 s and is offline. If the file is
    missing, say the harness is not installed and stop.
 2. Relay the three costs as printed: the value, its n, its window, and the line
    it is measured against (the multiple is value / line). Say in a clause what
@@ -18,7 +18,7 @@ no measurement of its own.
 
 | Cost | Fix |
 |---|---|
-| cache rewrites after a lapsed TTL | restart from a handoff (docs/long-running-sessions.md); keep a loop or cron tick inside the 5 minute cache TTL |
+| cache rewrites after a lapsed TTL | restart from a handoff (docs/long-running-sessions.md); for a loop or cron, `python3 ~/.claude/spend-report.py --tick-prompt '<words from the tick prompt>'` says which ticks' first call rewrote after the TTL lapsed |
 | calls held by prompts then approved | docs/permission-friction.md: which guard asked, and which asks are policy calls for the owner |
 | slowest Bash guard p95 | `bash doctor.sh --latency`, in the harness clone |
 | job folders on disk | `python3 ~/.claude/disk-space.py prune` (a listing; only `--apply` deletes) |
