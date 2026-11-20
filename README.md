@@ -3,8 +3,8 @@
 Skills for Claude Code, installed into `~/.claude/skills` once per machine, so
 they load in every project without touching repo files: `comms-hub` and
 `slack-draft` (one session speaks on Slack for all of them), `skill-forge` (one
-skill per recurring question in a new job), `pr-review`, `memory-audit` and
-`memory-archive`.
+skill per recurring question in a new job), `pr-review`, `memory-audit`,
+`memory-archive` and `harness-checkup`.
 
 Split out of [claude-code-harness](https://github.com/AdityaRon/claude-code-harness)
 at [6699a5c](https://github.com/AdityaRon/claude-code-harness/commit/6699a5c6432d3ebcdff63052d32e95a4ef314ada).
@@ -47,7 +47,7 @@ bash install.sh
   `~/.claude/skills.version` records the release.
 
 Several skills run scripts the harness installs in `~/.claude`
-(`memory-verify.sh`, `memory-index.sh`, `session-route.sh`, `spend-report.py`);
+(`memory-verify.sh`, `memory-index.sh`, `session-route.sh`, `spend-report.py`, `harness-checkup.py`);
 each skill's `forge.toml` lists them under `uses`.
 
 ## comms-hub: one session speaks on Slack for all of them
@@ -113,6 +113,7 @@ answer from a missing metric, a partial one and an expired login.
 - `slack-draft`: how a session other than the comms session sends Slack.
 - `memory-audit`: check memories against GitHub and Jira; runs the harness's `memory-verify.sh`.
 - `memory-archive`: relieve an over-limit memory index; proposes, never deletes; runs `memory-index.sh`.
+- `harness-checkup`: relays `harness-checkup.py`, the three largest costs on this machine with their n, window and line, and the harness's fix for each. Reads no transcripts, prints no dollar amounts.
 
 ## Testing
 
@@ -129,13 +130,13 @@ runs weekly (`.github/workflows/mutations.yml`).
 ```
 install.sh  doctor.sh    ← install into ~/.claude/skills; run every suite in tests/
 CHANGELOG.md  LICENSE    ← one entry per release; MIT
-skills/                  ← memory-audit/, memory-archive/, pr-review/, slack-draft/
+skills/                  ← memory-audit/, memory-archive/, harness-checkup/, pr-review/, slack-draft/
   comms-hub/             ← SKILL.md, config.example.toml, bin/, panel/ (the comms panel mod),
                            tests/ (Python), forge.toml, lint-waivers.toml (not installed)
   skill-forge/           ← SKILL.md, config.example.toml, bin/, templates/ (installed to ~/.local/share),
                            tests/, forge.toml (not installed)
 tests/                   ← install, repo-layout, and the skills' suites: comms-hub, comms-hub-prereqs,
-                           skill-forge and skill-lint; lib.sh is their shared pass/fail
+                           skill-forge, skill-lint and harness-checkup; lib.sh is their shared pass/fail
 ```
 
 ## License
