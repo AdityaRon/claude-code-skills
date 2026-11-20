@@ -50,10 +50,10 @@ done <<<"$EXPECT"
 T="$HOME/.local/share/skill-forge/templates"
 diff -r "$R/skills/skill-forge/templates" "$T" >/dev/null && pass "skill-forge's templates are in ~/.local/share/skill-forge/templates" \
   || fail "templates in the data dir" "$(diff -r "$R/skills/skill-forge/templates" "$T" 2>&1 | head -3)"
-for n in comms-hub memory-archive memory-audit pr-review skill-forge slack-draft; do
+for n in comms-hub harness-checkup memory-archive memory-audit pr-review skill-forge slack-draft; do
   grep -qxF "  ✓ skills/$n" <<<"$OUT" || BAD="$BAD $n"
 done
-[[ -z "$BAD" ]] && pass "names each of the six skills" || fail "names each skill" "$BAD"
+[[ -z "$BAD" ]] && pass "names each of the seven skills" || fail "names each skill" "$BAD"
 [[ "$(cat "$HOME/.config/comms-hub/config.toml")" == "$CH_SENTINEL" && "$(ls -A "$HOME/.config/comms-hub" | wc -l | tr -d ' ')" == 1 ]] \
   && ! grep -qF 'comms-hub is not configured' <<<"$OUT" \
   && pass "an existing comms-hub config is left byte for byte, and no hint" || fail "comms-hub config" "$(ls -A "$HOME/.config/comms-hub")"
