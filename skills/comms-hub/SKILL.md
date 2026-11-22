@@ -307,7 +307,13 @@ whole context.
    `routing` entry (`PY B/hub.py config` prints them) whose `repos` holds the
    PR's repo, whose `tickets` holds the ticket key's prefix, or whose
    `channels` holds the Slack channel of a post that names nobody. Run ListAgents
-   now, at routing time, and confirm the owner is listed. Before messaging an
+   now, at routing time, and confirm the owner is listed. An owner listed only
+   as an offline Remote Control row may be restarting: leave its items
+   unrouted for the next tick, and neither send nor ask the user this tick (a
+   send in that window asks for approval, and its reply arrives over Remote
+   Control, where every message asks). Log each item `--kind held --who
+   <session>` (below); an owner still offline when `routed` shows that hold is
+   not listed. Before messaging an
    item, check the owner is not already on it: `PY B/hub.py routed <link>`
    prints what the last seven days' log routed, held or asked about it (with
    two, asks answered days before were routed again). A Slack thread matches
