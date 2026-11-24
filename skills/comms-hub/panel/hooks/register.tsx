@@ -287,11 +287,12 @@ export const register: Register = on => {
 
   // A client joining reads at once, so it never draws the last turn's
   // snapshot. A phone also gets the pane opened for it, and the counts on the
-  // status line in case its app draws no pane at all.
+  // status line in case its app draws no pane at all. Unawaited, as at a
+  // turn's end: the attach waited on hub.py, up to its 20s timeout.
   on('session.attach', async ($, e, next) => {
     const done = await next(e)
     if (e.surface === 'mobile') await $.ui.open({ id: PANE, title: TITLE })
-    await refresh($)
+    void refresh($)
 
     return done
   })

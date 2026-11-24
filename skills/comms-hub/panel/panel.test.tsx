@@ -238,6 +238,7 @@ test('the pane reads again each minute while it is drawn or a phone is here, and
 
   roster.push('mobile')
   await $.session.attach({ surface: 'mobile', clientId: 'phone-1' })
+  await clock.advance(0)
   const attached = reads
   await clock.advance(60_000)
   expect(reads).toBe(attached + 1)
@@ -499,22 +500,18 @@ test('/comms as text caps each section at the pane\'s compact rows', async ($, o
 })
 
 test('a phone joining pins the counts on the status line, and its leaving clears them', async ($, on) => {
-  const statuses: (string | undefined)[] = []
-  const roster = ['terminal']
-  world(on, undefined, undefined, roster)
-  on('ui.status', (_, e) => { statuses.push(e.text); return { value: undefined } })
-  on('session.attach', (_, e) => ({ clientId: e.clientId }))
-  on('session.detach', (_, e) => ({ clientId: e.clientId }))
-  await $.command.run({ command: 'comms', args: '' })
-  expect(statuses).toEqual([])
+  const w = live(on)
+  await start($, w)
+  expect(w.statuses).toEqual([])
 
-  roster.push('mobile')
+  w.surfaces.push('mobile')
   await $.session.attach({ surface: 'mobile', clientId: 'mobile:1', viewport: { columns: 40, rows: 80, isFullscreen: false } })
-  expect(statuses.at(-1))
+  await w.clock.settle()
+  expect(w.statuses.at(-1))
     .toBe('Comms: 1 need you · 3 PRs need you · 3 new · 2 going out · 1 with sessions · 0 held · next tick 10:07 · /comms for the list')
-  roster.pop()
+  w.surfaces.pop()
   await $.session.detach({ surface: 'mobile', clientId: 'mobile:1', reason: 'detach' })
-  expect(statuses.at(-1)).toBeUndefined()
+  expect(w.statuses.at(-1)).toBeUndefined()
 })
 
 test('a long line is one row cut at the pane edge', async ($, on) => {
@@ -766,6 +763,20 @@ test('a desktop client joining is read for at once, as a phone is', async ($, on
   await $.session.attach({ surface: 'desktop', clientId: 'desktop:1' })
   await w.clock.settle()
   expect(w.reads).toBe(before + 1)
+})
+
+test('a client joining does not wait for the read', async ($, on) => {
+  const w = live(on)
+  await start($, w)
+  w.out = aged('1m', '10:01')
+  w.slow = 20_000                                      // hub.py runs to its timeout
+  let joined = false
+  const joining = $.session.attach({ surface: 'desktop', clientId: 'desktop:1' }).then(() => { joined = true })
+  await w.clock.settle()
+  expect(joined).toBe(true)
+  await w.clock.advance(20_000)
+  await joining
+  expect(prsLine(await texts($))).toBe('PRS · 5  as of 10:00 (1m ago)')
 })
 
 test('a failed read keeps the last good panel, and says why in one line', async ($, on) => {
