@@ -9,3 +9,5 @@ shellcheck, and compiles every Python file with macOS's `/usr/bin/python3`
 (3.9). Each skill's mutation list (`skills/<name>/tests/run.py --mutate`)
 runs weekly (`.github/workflows/mutations.yml`, Mondays 05:23 UTC); the comms
 panel's tests run daily (`.github/workflows/panel.yml`, 06:41 UTC).
+`skills/skill-forge/tests/live_acceptance.py` runs the acceptance checks against
+Postgres and Prometheus in Docker.

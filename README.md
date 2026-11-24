@@ -19,12 +19,14 @@ repo files.
 ## Check a skill of your own
 
 ```bash
-python3 skills/skill-forge/bin/skill_lint.py SKILL_DIR
+"$(bash skills/skill-forge/bin/python.sh)" skills/skill-forge/bin/skill_lint.py SKILL_DIR
 ```
 
-It checks the folder against skill-forge's ten conventions and exits 1 on a
-FAIL. One caveat: the convention on `uses` needs the harness scripts on the
-machine (see the docstring in `skill_lint.py`).
+`python.sh` prints a Python 3.10 or newer that has a TOML reader; macOS's own
+`python3` is 3.9. The lint checks the folder against skill-forge's ten
+conventions and exits 1 on a FAIL. For a skill whose SKILL.md runs scripts in
+`~/.claude`, the convention on `uses` needs the harness on the machine (see the
+docstring in `skill_lint.py`).
 
 ## Install
 
@@ -34,7 +36,7 @@ cd claude-code-skills
 bash install.sh
 ```
 
-With [claude-code-harness](https://github.com/AdityaRon/claude-code-harness), nothing to do: it pins a release of this repo and installs it. Needs macOS or Linux with bash and `git`; Python 3.10 or newer, `jq` and `gh` for comms-hub. Detail: [docs/install.md](docs/install.md).
+With [claude-code-harness](https://github.com/AdityaRon/claude-code-harness), nothing to do: it pins a release of this repo and installs it. Needs macOS or Linux with bash and `git`; Python 3.10 or newer with a TOML reader for comms-hub and skill-forge; `jq` and `gh` for comms-hub. Detail: [docs/install.md](docs/install.md).
 
 ## comms-hub
 
@@ -53,9 +55,9 @@ Protocol and config: [SKILL.md](skills/skill-forge/SKILL.md).
 
 ## Limits and not measured
 
-- Four of the seven skills (comms-hub, harness-checkup, memory-archive, memory-audit) do nothing useful without the harness.
+- Four of the seven skills (comms-hub, harness-checkup, memory-archive, memory-audit) run scripts the harness installs and are incomplete without it.
 - The Slack connector is your own; comms-hub and slack-draft need one registered.
-- The skill lint skips locally when no harness clone is present; CI always runs it.
+- The skill-lint suite (`tests/skill-lint.test.sh`) skips locally when no harness clone is present; CI always runs it.
 - No skill's effect has been measured: not time saved, not drafts stopped by the gate.
 
 ## Docs

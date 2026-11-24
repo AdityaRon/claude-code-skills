@@ -32,5 +32,5 @@ bash install.sh
   `~/.claude/skills.version` records the release.
 
 Several skills run scripts the harness installs in `~/.claude`
-(`memory-verify.sh`, `memory-index.sh`, `session-route.sh`, `spend-report.py`, `harness-checkup.py`);
+(`memory-verify.sh`, `memory-index.sh`, `session-route.sh`, `spend-report.py`, `harness-checkup.py`, `disk-space.py`);
 each skill's `forge.toml` lists them under `uses`.

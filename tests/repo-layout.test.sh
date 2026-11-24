@@ -14,7 +14,7 @@ for f in install.sh doctor.sh .github/install-apt-deps.sh; do
 done
 
 echo ""
-echo "=== every skill is on the README's layout lines ==="
+echo "=== every skill is on docs/layout.md's lines ==="
 BLOCK=$(cat docs/layout.md)
 N=0
 for d in skills/*/; do
@@ -59,12 +59,21 @@ echo "=== the README's skill-forge counts match the tree ==="
 SF=$(sed -n '/^## skill-forge/,/^## /p' "$ROOT/README.md")
 NCHECK=$(grep -c '^def check_' "$ROOT/skills/skill-forge/bin/skill_lint.py")
 NARCH=$(find "$ROOT/skills/skill-forge/templates" -mindepth 1 -maxdepth 1 -type d ! -name _shared | wc -l | tr -d ' ')
-word() { case "$1" in 8) echo eight;; 9) echo nine;; 10) echo ten;; 11) echo eleven;; 12) echo twelve;; *) echo "$1";; esac; }
+word() { local w=(zero one two three four five six seven eight nine ten eleven twelve); [[ "$1" -le 12 ]] && echo "${w[$1]}" || echo "$1"; }
 grep -qiE "\b$(word "$NCHECK") conventions" <<<"$SF" && pass "README says $(word "$NCHECK") conventions ($NCHECK def check_)" || fail "README does not say $(word "$NCHECK") conventions" "skill_lint.py has $NCHECK def check_"
 grep -qiE "^$(word "$NARCH") archetypes:" <<<"$SF" && pass "README says $(word "$NARCH") archetypes" || fail "README does not say $(word "$NARCH") archetypes" ""
 HAVE=$(grep -iE '^[A-Za-z]+ archetypes:' <<<"$SF" | sed 's/^[^:]*: *//; s/\.$//' | tr ',' '\n' | sed 's/^ *//; s/ *$//' | sort | tr '\n' ' ')
 WANT=$(find "$ROOT/skills/skill-forge/templates" -mindepth 1 -maxdepth 1 -type d ! -name _shared -exec basename {} \; | sort | tr '\n' ' ')
 [[ "$HAVE" == "$WANT" ]] && pass "archetype names equal templates/ dirs" || fail "archetype names differ from templates/" "README: $HAVE; tree: $WANT"
+# Every count of conventions in the README, not only the skill-forge section's.
+BAD=$(tr '\n' ' ' < "$ROOT/README.md" | grep -oiE '\b[a-z]+ +conventions' | awk '{print tolower($1)}' \
+      | grep -xE 'one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve' | grep -vx "$(word "$NCHECK")" || true)
+[[ -z "$BAD" ]] && pass "every count of conventions in the README is $(word "$NCHECK")" || fail "the README counts conventions as: $BAD" "skill_lint.py has $NCHECK def check_"
+# "Four of the seven skills": the harness rows and the skills on disk.
+NSK=$(find "$ROOT/skills" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')
+NH=$(while IFS= read -r r; do [[ "$(cell "$r" 5)" == harness ]] && echo x; done <<<"$TBL" | grep -c x || true)
+grep -qiE "\b$(word "$NH") of the $(word "$NSK") skills" "$ROOT/README.md" \
+  && pass "README says $(word "$NH") of the $(word "$NSK") skills need the harness" || fail "README does not say $(word "$NH") of the $(word "$NSK") skills" ""
 
 echo ""
 echo "=== every skill's tests/run.py is skill-forge's, byte for byte ==="
